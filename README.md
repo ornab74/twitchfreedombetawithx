@@ -37,7 +37,7 @@ AI and transcript storage are off until you enable them.
 
 ## Demo
 
-[Play the Twitch Freedom demo](https://github.com/ornab74/twitchfreedombetawithx/raw/refs/heads/main/demo/demo.mp4)
+[Play the 65-second Twitch Freedom demo](https://github.com/ornab74/twitchfreedombetawithx/raw/refs/heads/main/demo/demo.mp4)
 
 ## Feature reference
 
