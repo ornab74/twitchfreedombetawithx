@@ -1,3 +1,7 @@
+
+
+https://github.com/user-attachments/assets/02d51c6e-7179-4090-a43f-2e450480a2d1
+
 # TwitchX Freedom
 
 Twitch Freedom is a private, local-first Twitch player built with Flutter. It
@@ -34,10 +38,7 @@ AI and transcript storage are off until you enable them.
 - [Use Content Lab](#use-content-lab)
 - [Encrypted storage and deletion](#encrypted-storage-and-deletion)
 - [Troubleshooting](#troubleshooting)
-
-## Demo
-
-[Play the 65-second Twitch Freedom demo](https://github.com/ornab74/twitchfreedombetawithx/raw/refs/heads/main/demo/demo.mp4)
+ 
 
 ## Feature reference
 
