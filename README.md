@@ -38,7 +38,7 @@ AI and transcript storage are off until you enable them.
 ## Demo
 
 <video width="640" height="360" controls muted autoplay>
-  <source src="demo/demo.webm" type="video/webm" />
+  <source src="demo/demo.mp4" type="video/mp4" />
 </video>
 
 ## Feature reference
