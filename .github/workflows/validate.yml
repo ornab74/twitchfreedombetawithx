@@ -1,0 +1,79 @@
+name: Validate Flutter workspace
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
+        with:
+          channel: stable
+          flutter-version: 3.44.0
+          cache: false
+
+      - name: Use CocoaPods for Apple plugins
+        run: flutter config --no-enable-swift-package-manager
+
+      - name: Generate platform folders
+        run: flutter create --platforms=android,ios,linux,macos,windows --org com.ornab74 .
+
+      - name: Apply platform capability configuration
+        run: dart run tool/configure_generated_platforms.dart
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev \
+            libmpv-dev mpv ffmpeg libsecret-1-dev libjsoncpp-dev
+
+      - name: Resolve dependencies and compare requested baseline
+        run: |
+          flutter pub get
+          dart run tool/verify_resolved_packages.dart
+
+      - name: Verify Linux software-rendering policy
+        run: ./tool/verify_linux_ready.sh
+
+      - name: Parse all Dart sources with formatter
+        run: dart format --output=none lib test integration_test tool
+
+      - name: Static analysis
+        run: flutter analyze --no-fatal-infos
+
+      - name: Unit tests
+        run: flutter test --reporter expanded
+
+      - name: Security source checks
+        run: dart run tool/security_check.dart
+
+      - name: Dependency inventory
+        run: flutter pub deps --style=compact > dependency-tree.txt
+
+      - name: Upload dependency inventory
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: dependency-tree
+          path: dependency-tree.txt
+          if-no-files-found: error
+          retention-days: 14

@@ -1,0 +1,62 @@
+name: twitch_freedom_ultra
+description: Local-first text-only Twitch player with encrypted vault, Dart HLS resolver, local Gemma agents, and protective chat.
+publish_to: none
+version: 0.4.1+5
+
+environment:
+  sdk: ^3.12.0
+  flutter: '>=3.44.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_driver:
+    sdk: flutter
+  http: 1.6.0
+  cryptography: 2.9.0
+  crypto: 3.0.7
+  convert: 3.1.2
+  cryptography_flutter: 2.3.4
+  flutter_secure_storage: 10.3.1
+  sqlite3: 3.5.0
+  path: 1.9.1
+  path_provider: 2.1.6
+  uuid: 4.6.0
+  intl: 0.20.3
+  file_selector: 1.1.0
+  meta: 1.18.0
+  video_player: 2.13.0
+  media_kit: 1.2.6
+  media_kit_video: 2.0.1
+  media_kit_libs_video: 1.0.7
+  flutter_gemma: 1.4.1
+  flutter_gemma_litertlm: 1.3.1
+  flutter_gemma_speech: 0.2.0
+  url_launcher: 6.3.2
+  wakelock_plus: 1.7.0
+  package_info_plus: 10.2.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  integration_test:
+    sdk: flutter
+  flutter_lints: 6.0.0
+  fake_async: 1.3.3
+
+# Local Linux patches: keep software-frame work bounded and detach stale mpv
+# FFI callbacks safely when Flutter performs a debug hot restart.
+dependency_overrides:
+  media_kit:
+    path: third_party/media_kit
+  media_kit_video:
+    path: third_party/media_kit_video
+
+flutter:
+  # flutter_gemma 1.4.1 emits a SwiftPM manifest that Xcode 15.4 cannot parse,
+  # and the media_kit Apple plugins still require CocoaPods.
+  config:
+    enable-swift-package-manager: false
+  uses-material-design: true
+  assets:
+    - assets/prompts/

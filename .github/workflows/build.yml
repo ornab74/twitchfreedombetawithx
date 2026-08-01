@@ -1,0 +1,194 @@
+name: Build all platform artifacts
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2025
+            platform: windows
+            artifact: TwitchFreedom-Windows-x64
+          - os: macos-14
+            platform: macos
+            artifact: TwitchFreedom-macOS
+          - os: ubuntu-24.04
+            platform: linux
+            artifact: TwitchFreedom-Linux-x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
+        with:
+          channel: stable
+          flutter-version: 3.44.0
+          cache: false
+
+      - name: Use CocoaPods for Apple plugins
+        run: flutter config --no-enable-swift-package-manager
+
+      - name: Install Linux native packages
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev \
+            libmpv-dev mpv ffmpeg libsecret-1-dev libjsoncpp-dev
+
+      - name: Generate platform folders
+        run: flutter create --platforms=android,ios,linux,macos,windows --org com.ornab74 .
+
+      - name: Apply platform capability configuration
+        run: dart run tool/configure_generated_platforms.dart
+
+      - name: Resolve packages
+        run: |
+          flutter pub get
+          dart run tool/verify_resolved_packages.dart
+
+      - name: Verify Linux software-rendering policy
+        if: runner.os == 'Linux'
+        shell: bash
+        run: ./tool/verify_linux_ready.sh
+
+      - name: Analyze and test
+        run: |
+          flutter analyze --no-fatal-infos
+          flutter test
+
+      - name: Build desktop bundle
+        run: flutter build ${{ matrix.platform }} --release
+
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath ${{ matrix.artifact }}.zip
+          (Get-FileHash ${{ matrix.artifact }}.zip -Algorithm SHA256).Hash.ToLower() + "  ${{ matrix.artifact }}.zip" | Out-File -Encoding ascii ${{ matrix.artifact }}.sha256
+
+      - name: Package macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent build/macos/Build/Products/Release/twitch_freedom_ultra.app "${{ matrix.artifact }}.zip"
+          shasum -a 256 "${{ matrix.artifact }}.zip" > "${{ matrix.artifact }}.sha256"
+
+      - name: Package Linux
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          tar -C build/linux/x64/release/bundle -czf "${{ matrix.artifact }}.tar.gz" .
+          sha256sum "${{ matrix.artifact }}.tar.gz" > "${{ matrix.artifact }}.sha256"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            ${{ matrix.artifact }}.*
+          if-no-files-found: error
+          retention-days: 14
+
+  android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4.8.0
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
+        with:
+          channel: stable
+          flutter-version: 3.44.0
+          cache: false
+      - name: Use CocoaPods for Apple plugins
+        run: flutter config --no-enable-swift-package-manager
+      - run: flutter create --platforms=android --org com.ornab74 .
+      - run: dart run tool/configure_generated_platforms.dart
+      - run: flutter pub get
+      - run: dart run tool/verify_resolved_packages.dart
+      - run: flutter analyze --no-fatal-infos
+      - run: flutter test
+      - name: Build arm64 APK
+        run: flutter build apk --release --target-platform android-arm64
+      - name: Build Android App Bundle
+        run: flutter build appbundle --release --target-platform android-arm64
+      - name: Hash Android artifacts
+        run: |
+          sha256sum build/app/outputs/flutter-apk/app-release.apk > TwitchFreedom-Android-arm64.sha256
+          sha256sum build/app/outputs/bundle/release/app-release.aab >> TwitchFreedom-Android-arm64.sha256
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: TwitchFreedom-Android-arm64
+          path: |
+            build/app/outputs/flutter-apk/app-release.apk
+            build/app/outputs/bundle/release/app-release.aab
+            TwitchFreedom-Android-arm64.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  ios:
+    runs-on: macos-14
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
+        with:
+          channel: stable
+          flutter-version: 3.44.0
+          cache: false
+      - name: Use CocoaPods for Apple plugins
+        run: flutter config --no-enable-swift-package-manager
+      - run: flutter create --platforms=ios --org com.ornab74 .
+      - run: dart run tool/configure_generated_platforms.dart
+      - run: flutter pub get
+      - run: dart run tool/verify_resolved_packages.dart
+      - run: flutter analyze --no-fatal-infos
+      - run: flutter test
+      - name: Build unsigned iOS application
+        run: flutter build ios --release --no-codesign
+      - name: Package and hash iOS application
+        shell: bash
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent build/ios/iphoneos/Runner.app TwitchFreedom-iOS-unsigned.zip
+          shasum -a 256 TwitchFreedom-iOS-unsigned.zip > TwitchFreedom-iOS-unsigned.sha256
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: TwitchFreedom-iOS-unsigned
+          path: |
+            TwitchFreedom-iOS-unsigned.zip
+            TwitchFreedom-iOS-unsigned.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  release-policy:
+    runs-on: ubuntu-24.04
+    needs: [desktop, android, ios]
+    steps:
+      - run: |
+          echo "Unsigned technical artifacts built."
+          echo "Code signing, macOS notarization, Windows signing, Android signing, SBOM review, and FFmpeg licensing review must occur in a separately protected release workflow."
