@@ -7,6 +7,15 @@ import '../core/result.dart';
 import '../core/secure_log.dart';
 import 'x_models.dart';
 
+final class XFeedPage {
+  const XFeedPage({required this.posts, this.nextToken});
+
+  final List<XPost> posts;
+  final String? nextToken;
+
+  bool get hasMore => nextToken != null && nextToken!.isNotEmpty;
+}
+
 final class XApiService {
   XApiService({required SecureLog log}) : _log = log;
 
@@ -76,11 +85,12 @@ final class XApiService {
     }
   }
 
-  Future<AppResult<List<XPost>>> homeFeed({
+  Future<AppResult<XFeedPage>> homeFeed({
     required String bearerToken,
     String? sinceId,
+    String? paginationToken,
   }) async {
-    final result = await _withClient((client) async {
+    final result = await _withTypedClient<XFeedPage>((client) async {
       final me = await _getJson(
         client,
         Uri.https('api.x.com', '/2/users/me', <String, String>{
@@ -100,6 +110,9 @@ final class XApiService {
       if (sinceId != null && _isPostId(sinceId)) {
         parameters['since_id'] = sinceId;
       }
+      if (paginationToken != null && paginationToken.isNotEmpty) {
+        parameters['pagination_token'] = paginationToken;
+      }
       final payload = await _getJson(
         client,
         Uri.https(
@@ -109,12 +122,17 @@ final class XApiService {
         ),
         bearerToken,
       );
-      return parseHomeTimeline(payload, ownUserId: id);
+      final meta = payload['meta'];
+      final nextToken = meta is Map ? meta['next_token'] as String? : null;
+      return XFeedPage(
+        posts: parseHomeTimeline(payload, ownUserId: id),
+        nextToken: nextToken,
+      );
     });
-    if (result case AppError<List<XPost>>(
+    if (result case AppError<XFeedPage>(
       error: AppFailure(code: 'x_unauthorized'),
     )) {
-      return const AppError<List<XPost>>(
+      return const AppError<XFeedPage>(
         AppFailure(
           'x_user_context_required',
           'My Feed requires an OAuth user access token with tweet.read and users.read.',
@@ -258,22 +276,24 @@ final class XApiService {
 
   Future<AppResult<List<XPost>>> _withClient(
     Future<List<XPost>> Function(HttpClient client) action,
+  ) => _withTypedClient<List<XPost>>(action);
+
+  Future<AppResult<T>> _withTypedClient<T>(
+    Future<T> Function(HttpClient client) action,
   ) async {
     final client = HttpClient()..connectionTimeout = AppConfig.networkTimeout;
     client.badCertificateCallback = (_, __, ___) => false;
     try {
-      return AppSuccess<List<XPost>>(await action(client));
+      return AppSuccess<T>(await action(client));
     } on TimeoutException catch (error) {
-      return AppError<List<XPost>>(
+      return AppError<T>(
         AppFailure('x_timeout', 'X did not respond in time.', cause: error),
       );
     } on XApiException catch (error) {
-      return AppError<List<XPost>>(
-        AppFailure(error.code, error.message, cause: error),
-      );
+      return AppError<T>(AppFailure(error.code, error.message, cause: error));
     } catch (error) {
       _log.warning('X API request failed without credential details: $error');
-      return AppError<List<XPost>>(
+      return AppError<T>(
         AppFailure(
           'x_request_failed',
           'Could not load content from X.',

@@ -935,38 +935,94 @@ final class _XModeScreenState extends State<XModeScreen> {
   }
 }
 
-final class _PostsList extends StatelessWidget {
+final class _PostsList extends StatefulWidget {
   const _PostsList({required this.controller});
   final AppController controller;
 
   @override
-  Widget build(BuildContext context) => GlassPanel(
-    padding: EdgeInsets.zero,
-    child: Column(
-      children: <Widget>[
-        const ListTile(
-          leading: Icon(Icons.dynamic_feed_rounded),
-          title: Text('X posts'),
-        ),
-        const Divider(height: 1),
-        Expanded(
-          child: controller.xPosts.isEmpty
-              ? const Center(
-                  child: Icon(Icons.alternate_email_rounded, size: 42),
-                )
-              : ListView.separated(
-                  padding: const EdgeInsets.all(10),
-                  itemCount: controller.xPosts.length,
-                  separatorBuilder: (_, __) => const Divider(height: 18),
-                  itemBuilder: (context, index) {
-                    final post = controller.xPosts[index];
-                    return _PostItem(controller: controller, post: post);
-                  },
-                ),
-        ),
-      ],
-    ),
-  );
+  State<_PostsList> createState() => _PostsListState();
+}
+
+final class _PostsListState extends State<_PostsList> {
+  final ScrollController _scroll = ScrollController();
+
+  AppController get controller => widget.controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _scroll.addListener(_loadMoreNearBottom);
+  }
+
+  void _loadMoreNearBottom() {
+    if (!_scroll.hasClients ||
+        _scroll.position.extentAfter > 600 ||
+        !controller.xFeedHasMore ||
+        controller.xFeedLoadingMore) {
+      return;
+    }
+    unawaited(controller.loadMoreXHomeFeed());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (controller.xFeedHasMore && !controller.xFeedLoadingMore) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _loadMoreNearBottom();
+      });
+    }
+    return GlassPanel(
+      padding: EdgeInsets.zero,
+      child: Column(
+        children: <Widget>[
+          const ListTile(
+            leading: Icon(Icons.dynamic_feed_rounded),
+            title: Text('X posts'),
+          ),
+          const Divider(height: 1),
+          Expanded(
+            child: controller.xPosts.isEmpty
+                ? const Center(
+                    child: Icon(Icons.alternate_email_rounded, size: 42),
+                  )
+                : ListView.separated(
+                    controller: _scroll,
+                    padding: const EdgeInsets.all(10),
+                    itemCount:
+                        controller.xPosts.length +
+                        (controller.xFeedHasMore ? 1 : 0),
+                    separatorBuilder: (_, __) => const Divider(height: 18),
+                    itemBuilder: (context, index) {
+                      if (index == controller.xPosts.length) {
+                        return Padding(
+                          padding: EdgeInsets.symmetric(vertical: 18),
+                          child: Center(
+                            child: controller.xFeedLoadingMore
+                                ? const CircularProgressIndicator()
+                                : const Text('Scroll to load more'),
+                          ),
+                        );
+                      }
+                      final post = controller.xPosts[index];
+                      return KeyedSubtree(
+                        key: ValueKey<String>('x-post-${post.id}'),
+                        child: _PostItem(controller: controller, post: post),
+                      );
+                    },
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    _scroll
+      ..removeListener(_loadMoreNearBottom)
+      ..dispose();
+    super.dispose();
+  }
 }
 
 final class _PostItem extends StatelessWidget {

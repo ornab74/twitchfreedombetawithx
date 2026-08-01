@@ -3,9 +3,41 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:twitch_freedom_ultra/core/models.dart';
 import 'package:twitch_freedom_ultra/state/app_controller.dart';
 import 'package:twitch_freedom_ultra/ui/theme.dart';
+import 'package:twitch_freedom_ultra/ui/widgets/x_secure_media.dart';
 import 'package:twitch_freedom_ultra/ui/x_mode_screen.dart';
 
 void main() {
+  testWidgets('secure X image updates when its user URI changes', (
+    tester,
+  ) async {
+    final first = Uri.parse(
+      'https://pbs.twimg.com/profile_images/1/first_normal.jpg',
+    );
+    final second = Uri.parse(
+      'https://pbs.twimg.com/profile_images/2/second_normal.jpg',
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: XSecureImage(key: const ValueKey('avatar'), uri: first),
+      ),
+    );
+    expect(
+      (tester.widget<Image>(find.byType(Image)).image as NetworkImage).url,
+      first.toString(),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: XSecureImage(key: const ValueKey('avatar'), uri: second),
+      ),
+    );
+    expect(
+      (tester.widget<Image>(find.byType(Image)).image as NetworkImage).url,
+      second.toString(),
+    );
+  });
+
   testWidgets('X mode fits desktop and compact surfaces', (tester) async {
     final controller = AppController();
     addTearDown(controller.scheduler.close);

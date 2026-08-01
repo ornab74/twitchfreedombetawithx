@@ -28,10 +28,18 @@ final class _XSecureImageState extends State<XSecureImage> {
   @override
   void initState() {
     super.initState();
-    if (XMediaStore.isTrustedMediaUri(widget.uri)) {
-      _provider = NetworkImage(widget.uri.toString());
-    }
+    _provider = _providerFor(widget.uri);
   }
+
+  @override
+  void didUpdateWidget(covariant XSecureImage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.uri == widget.uri) return;
+    _provider = _providerFor(widget.uri);
+  }
+
+  static NetworkImage? _providerFor(Uri uri) =>
+      XMediaStore.isTrustedMediaUri(uri) ? NetworkImage(uri.toString()) : null;
 
   @override
   Widget build(BuildContext context) {

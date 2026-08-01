@@ -143,6 +143,7 @@ final class AppController extends ChangeNotifier {
   XContentSource _xContentSource = XContentSource.account;
   bool _xAutoRefresh = false;
   bool _xFeedRefreshInFlight = false;
+  String? _xFeedNextToken;
   StreamRecord? _selected;
   bool _chatConnected = false;
   String _chatStatus = 'Disconnected';
@@ -192,6 +193,11 @@ final class AppController extends ChangeNotifier {
   String get xHandle => _xHandle;
   XContentSource get xContentSource => _xContentSource;
   bool get xAutoRefresh => _xAutoRefresh;
+  bool get xFeedLoadingMore => _xFeedRefreshInFlight;
+  bool get xFeedHasMore =>
+      _xContentSource == XContentSource.home &&
+      _xFeedNextToken != null &&
+      _xFeedNextToken!.isNotEmpty;
   bool get xUserConnected => _xUserAccessToken.isNotEmpty;
   String get xClientId => _xClientId;
   bool get xClientSecretConfigured => _xClientSecret.isNotEmpty;
@@ -335,12 +341,6 @@ final class AppController extends ChangeNotifier {
       preferences: true,
     );
     notifyListeners();
-    if (_preferences.ai.enabled &&
-        _preferences.ai.autoLoadModel &&
-        _preferences.ai.modelDirectory.isNotEmpty &&
-        gemma.current.installed) {
-      unawaited(_schedulePersistedGemmaLoad());
-    }
   }
 
   Future<void> _loadState() async {
@@ -447,26 +447,69 @@ final class AppController extends ChangeNotifier {
       final existing = wasHome ? _xPosts : const <XPost>[];
       final sinceId = wasHome ? _newestXPostId(existing) : null;
       final tokenResult = await _validXUserToken();
-      final result = await tokenResult.fold<Future<AppResult<List<XPost>>>>(
+      final result = await tokenResult.fold<Future<AppResult<XFeedPage>>>(
         success: (token) => xApi.homeFeed(bearerToken: token, sinceId: sinceId),
-        failure: (failure) async => AppError<List<XPost>>(failure),
+        failure: (failure) async => AppError<XFeedPage>(failure),
       );
-      if (result case AppSuccess<List<XPost>>(value: final posts)) {
-        _xPosts = _mergeXPosts(posts, existing);
+      if (result case AppSuccess<XFeedPage>(value: final page)) {
+        _xPosts = _mergeXPosts(page.posts, existing);
+        if (!wasHome) _xFeedNextToken = page.nextToken;
         _xContentSource = XContentSource.home;
-        _status = posts.isEmpty
+        _status = page.posts.isEmpty
             ? 'X home feed is current.'
-            : 'Added ${posts.length} new X post${posts.length == 1 ? '' : 's'} securely.';
+            : 'Added ${page.posts.length} new X post${page.posts.length == 1 ? '' : 's'} securely.';
         if (!_xAutoRefresh) setXAutoRefresh(true);
       } else if (!quiet) {
-        if (result case AppError<List<XPost>>(error: final failure)) {
+        if (result case AppError<XFeedPage>(error: final failure)) {
           _setError(failure.message);
         }
       }
-      return result;
+      return result.fold<AppResult<List<XPost>>>(
+        success: (page) => AppSuccess<List<XPost>>(page.posts),
+        failure: AppError<List<XPost>>.new,
+      );
     } finally {
       _xFeedRefreshInFlight = false;
       if (!quiet) _setBusy(false);
+      _pulse(x: true);
+      notifyListeners();
+    }
+  }
+
+  Future<AppResult<List<XPost>>> loadMoreXHomeFeed() async {
+    final nextToken = _xFeedNextToken;
+    if (_xFeedRefreshInFlight ||
+        _xContentSource != XContentSource.home ||
+        nextToken == null ||
+        nextToken.isEmpty) {
+      return AppSuccess<List<XPost>>(_xPosts);
+    }
+    _xFeedRefreshInFlight = true;
+    _pulse(x: true);
+    notifyListeners();
+    try {
+      final tokenResult = await _validXUserToken();
+      final result = await tokenResult.fold<Future<AppResult<XFeedPage>>>(
+        success: (token) =>
+            xApi.homeFeed(bearerToken: token, paginationToken: nextToken),
+        failure: (failure) async => AppError<XFeedPage>(failure),
+      );
+      if (result case AppSuccess<XFeedPage>(value: final page)) {
+        final before = _xPosts.length;
+        _xPosts = _mergeXPosts(_xPosts, page.posts);
+        _xFeedNextToken = page.nextToken;
+        final added = _xPosts.length - before;
+        _status = added == 0
+            ? 'No more X posts are available right now.'
+            : 'Loaded $added older X post${added == 1 ? '' : 's'}.';
+        return AppSuccess<List<XPost>>(_xPosts);
+      }
+      final failure = (result as AppError<XFeedPage>).error;
+      _xFeedNextToken = null;
+      _setError(failure.message);
+      return AppError<List<XPost>>(failure);
+    } finally {
+      _xFeedRefreshInFlight = false;
       _pulse(x: true);
       notifyListeners();
     }
@@ -706,7 +749,7 @@ final class AppController extends ChangeNotifier {
       if (byTime != 0) return byTime;
       return _compareXPostIds(b.id, a.id);
     });
-    return merged.take(250).toList(growable: false);
+    return List<XPost>.unmodifiable(merged);
   }
 
   String? _newestXPostId(List<XPost> posts) {
@@ -1243,12 +1286,6 @@ final class AppController extends ChangeNotifier {
     _setBusy(true, 'Verifying selected Gemma model…');
     gemma.configureModelDirectory(path);
     final result = await gemma.attestConfiguredModel();
-    if (result is AppSuccess<File> &&
-        _preferences.ai.enabled &&
-        _preferences.ai.autoLoadModel) {
-      final loaded = await gemma.load(_preferences.ai.backend);
-      if (loaded is AppError<void>) _setError(loaded.error.message);
-    }
     if (result is AppError<File>) _setError(result.error.message);
     _setBusy(false);
     return result;
@@ -1267,7 +1304,7 @@ final class AppController extends ChangeNotifier {
       final ai = _preferences.ai.copyWith(
         enabled: true,
         modelDirectory: resolvedDirectory,
-        autoLoadModel: true,
+        autoLoadModel: false,
       );
       await updatePreferences(_preferences.copyWith(ai: ai));
       if (download) return installAndLoadGemma();
@@ -1285,37 +1322,6 @@ final class AppController extends ChangeNotifier {
       );
       _setError(failure.message);
       return AppError<void>(failure);
-    }
-  }
-
-  Future<void> _schedulePersistedGemmaLoad() async {
-    try {
-      final result = await scheduler.schedule<AppResult<void>>(
-        PulseTaskSpec<AppResult<void>>(
-          key: 'persisted-gemma-autoload',
-          scope: 'model-autoload',
-          lane: PulseLane.ai,
-          affinity: 'gemma-runtime',
-          priority: 25,
-          cost: 75,
-          notBefore: DateTime.now().add(const Duration(seconds: 2)),
-          requiresVault: true,
-          pauseDuringPlayback: true,
-          action: (PulseTaskContext context) async {
-            context.throwIfCancelled();
-            return gemma.load(_preferences.ai.backend);
-          },
-        ),
-      );
-      if (result is AppError<void>) {
-        log.warning(
-          'Persisted Gemma model auto-load skipped: ${result.error.code}',
-        );
-      }
-    } on PulseCancelledException {
-      // Locking or changing security scope intentionally cancels queued work.
-    } catch (cause) {
-      log.warning('Persisted Gemma model auto-load deferred: $cause');
     }
   }
 

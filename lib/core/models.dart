@@ -367,7 +367,7 @@ final class AiFeatureSettings {
     this.safetySensitivity = 0.7,
     this.backend = AiBackend.gpuFirst,
     this.modelDirectory = '',
-    this.autoLoadModel = true,
+    this.autoLoadModel = false,
   });
 
   final bool enabled;
@@ -425,7 +425,7 @@ final class AiFeatureSettings {
           (json['backend'] as String?) ?? 'gpuFirst',
         ),
         modelDirectory: (json['modelDirectory'] as String?) ?? '',
-        autoLoadModel: (json['autoLoadModel'] as bool?) ?? true,
+        autoLoadModel: (json['autoLoadModel'] as bool?) ?? false,
       );
 
   AiFeatureSettings copyWith({

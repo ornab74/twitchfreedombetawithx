@@ -574,12 +574,12 @@ final class _SettingsSheetState extends State<SettingsSheet> {
                               ),
                             ),
                           ),
-                          _Switch(
-                            'Load selected model after unlock',
-                            'Automatically verifies the persisted directory and loads Gemma only after the vault unlocks.',
-                            _draft.ai.autoLoadModel,
-                            (bool value) => _setAi(
-                              _draft.ai.copyWith(autoLoadModel: value),
+                          const ListTile(
+                            contentPadding: EdgeInsets.zero,
+                            leading: Icon(Icons.speed_rounded),
+                            title: Text('AI loads on demand'),
+                            subtitle: Text(
+                              'The model is verified after unlock but only loaded when you choose an AI feature.',
                             ),
                           ),
                           const SizedBox(height: 14),
