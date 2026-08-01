@@ -98,3 +98,12 @@ test-results/
 reports/
 dependency-tree.txt
 lcov.info
+
+# Locally generated release installers and checksums
+/TwitchFreedom-*.deb
+/TwitchFreedom-*.rpm
+/TwitchFreedom-*.msi
+/TwitchFreedom-*.dmg
+/TwitchFreedom-*.zip
+/TwitchFreedom-*.tar.gz
+/TwitchFreedom-*.sha256

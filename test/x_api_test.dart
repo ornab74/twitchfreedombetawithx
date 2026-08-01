@@ -101,4 +101,31 @@ void main() {
       isFalse,
     );
   });
+
+  test('home timeline excludes posts authored by the connected account', () {
+    final posts = XApiService.parseHomeTimeline(<String, Object?>{
+      'data': <Object?>[
+        <String, Object?>{'id': '101', 'text': 'mine', 'author_id': '7'},
+        <String, Object?>{
+          'id': '102',
+          'text': 'from a followed account',
+          'author_id': '8',
+        },
+      ],
+      'includes': <String, Object?>{
+        'users': <Object?>[
+          <String, Object?>{'id': '7', 'name': 'Me', 'username': 'me'},
+          <String, Object?>{
+            'id': '8',
+            'name': 'Followed',
+            'username': 'followed',
+          },
+        ],
+      },
+    }, ownUserId: '7');
+
+    expect(posts, hasLength(1));
+    expect(posts.single.id, '102');
+    expect(posts.single.authorUsername, 'followed');
+  });
 }

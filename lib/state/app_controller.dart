@@ -142,6 +142,7 @@ final class AppController extends ChangeNotifier {
   DateTime? _xUserTokenExpiresAt;
   XContentSource _xContentSource = XContentSource.account;
   bool _xAutoRefresh = false;
+  bool _xFeedRefreshInFlight = false;
   StreamRecord? _selected;
   bool _chatConnected = false;
   String _chatStatus = 'Disconnected';
@@ -436,25 +437,39 @@ final class AppController extends ChangeNotifier {
   }
 
   Future<AppResult<List<XPost>>> loadXHomeFeed({bool quiet = false}) async {
-    if (!quiet) _setBusy(true, 'Loading your X home feed…');
-    final tokenResult = await _validXUserToken();
-    final result = await tokenResult.fold<Future<AppResult<List<XPost>>>>(
-      success: (token) => xApi.homeFeed(bearerToken: token),
-      failure: (failure) async => AppError<List<XPost>>(failure),
-    );
-    if (result case AppSuccess<List<XPost>>(value: final posts)) {
-      _xPosts = _mergeXPosts(posts, quiet ? _xPosts : const <XPost>[]);
-      _xContentSource = XContentSource.home;
-      _status = 'X home feed updated securely.';
-    } else if (!quiet) {
-      if (result case AppError<List<XPost>>(error: final failure)) {
-        _setError(failure.message);
-      }
+    if (_xFeedRefreshInFlight) {
+      return AppSuccess<List<XPost>>(_xPosts);
     }
-    if (!quiet) _setBusy(false);
-    _pulse(x: true);
-    notifyListeners();
-    return result;
+    _xFeedRefreshInFlight = true;
+    if (!quiet) _setBusy(true, 'Loading your X home feed…');
+    try {
+      final wasHome = _xContentSource == XContentSource.home;
+      final existing = wasHome ? _xPosts : const <XPost>[];
+      final sinceId = wasHome ? _newestXPostId(existing) : null;
+      final tokenResult = await _validXUserToken();
+      final result = await tokenResult.fold<Future<AppResult<List<XPost>>>>(
+        success: (token) => xApi.homeFeed(bearerToken: token, sinceId: sinceId),
+        failure: (failure) async => AppError<List<XPost>>(failure),
+      );
+      if (result case AppSuccess<List<XPost>>(value: final posts)) {
+        _xPosts = _mergeXPosts(posts, existing);
+        _xContentSource = XContentSource.home;
+        _status = posts.isEmpty
+            ? 'X home feed is current.'
+            : 'Added ${posts.length} new X post${posts.length == 1 ? '' : 's'} securely.';
+        if (!_xAutoRefresh) setXAutoRefresh(true);
+      } else if (!quiet) {
+        if (result case AppError<List<XPost>>(error: final failure)) {
+          _setError(failure.message);
+        }
+      }
+      return result;
+    } finally {
+      _xFeedRefreshInFlight = false;
+      if (!quiet) _setBusy(false);
+      _pulse(x: true);
+      notifyListeners();
+    }
   }
 
   Future<AppResult<void>> connectXUser(
@@ -668,7 +683,9 @@ final class AppController extends ChangeNotifier {
     _xAutoRefresh = enabled;
     if (enabled) {
       _xRefreshTimer = Timer.periodic(const Duration(minutes: 2), (_) {
-        if (_unlocked && _xContentSource == XContentSource.home && !_busy) {
+        if (_unlocked &&
+            _xContentSource == XContentSource.home &&
+            !_xFeedRefreshInFlight) {
           unawaited(loadXHomeFeed(quiet: true));
         }
       });
@@ -679,10 +696,37 @@ final class AppController extends ChangeNotifier {
 
   List<XPost> _mergeXPosts(List<XPost> fresh, List<XPost> existing) {
     final seen = <String>{};
-    return <XPost>[
+    final merged = <XPost>[
       ...fresh,
       ...existing,
-    ].where((post) => seen.add(post.id)).take(100).toList();
+    ].where((post) => seen.add(post.id)).toList();
+    merged.sort((a, b) {
+      final byTime = (b.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0))
+          .compareTo(a.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0));
+      if (byTime != 0) return byTime;
+      return _compareXPostIds(b.id, a.id);
+    });
+    return merged.take(250).toList(growable: false);
+  }
+
+  String? _newestXPostId(List<XPost> posts) {
+    String? newest;
+    for (final post in posts) {
+      if (!_isXPostId(post.id)) continue;
+      if (newest == null || _compareXPostIds(post.id, newest) > 0) {
+        newest = post.id;
+      }
+    }
+    return newest;
+  }
+
+  bool _isXPostId(String value) =>
+      value.isNotEmpty &&
+      value.codeUnits.every((unit) => unit >= 48 && unit <= 57);
+
+  int _compareXPostIds(String a, String b) {
+    if (a.length != b.length) return a.length.compareTo(b.length);
+    return a.compareTo(b);
   }
 
   Future<AppResult<XStoredMedia>> storeXMedia(XPost post, XMedia media) async {

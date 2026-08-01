@@ -76,7 +76,10 @@ final class XApiService {
     }
   }
 
-  Future<AppResult<List<XPost>>> homeFeed({required String bearerToken}) async {
+  Future<AppResult<List<XPost>>> homeFeed({
+    required String bearerToken,
+    String? sinceId,
+  }) async {
     final result = await _withClient((client) async {
       final me = await _getJson(
         client,
@@ -93,16 +96,20 @@ final class XApiService {
           'My Feed requires an OAuth user access token.',
         );
       }
+      final parameters = _timelineParameters(maxResults: 100);
+      if (sinceId != null && _isPostId(sinceId)) {
+        parameters['since_id'] = sinceId;
+      }
       final payload = await _getJson(
         client,
         Uri.https(
           'api.x.com',
           '/2/users/$id/timelines/reverse_chronological',
-          _timelineParameters(maxResults: 50),
+          parameters,
         ),
         bearerToken,
       );
-      return parseTimeline(payload);
+      return parseHomeTimeline(payload, ownUserId: id);
     });
     if (result case AppError<List<XPost>>(
       error: AppFailure(code: 'x_unauthorized'),
@@ -290,6 +297,10 @@ final class XApiService {
         'media_key,type,url,preview_image_url,variants,width,height,alt_text,duration_ms',
   };
 
+  static bool _isPostId(String value) =>
+      value.isNotEmpty &&
+      value.codeUnits.every((unit) => unit >= 48 && unit <= 57);
+
   Future<Map<String, Object?>> _getJson(
     HttpClient client,
     Uri uri,
@@ -353,14 +364,14 @@ final class XApiService {
     final usersById = <String, Map<String, Object?>>{};
     final userRows = includes is Map ? includes['users'] : null;
     if (userRows is List) {
-      for (final raw in userRows.whereType<Map>()) {
+      for (final raw in userRows.whereType<Map<Object?, Object?>>()) {
         final user = Map<String, Object?>.from(raw);
         final id = user['id'] as String?;
         if (id != null) usersById[id] = user;
       }
     }
     if (mediaRows is List) {
-      for (final raw in mediaRows.whereType<Map>()) {
+      for (final raw in mediaRows.whereType<Map<Object?, Object?>>()) {
         final row = Map<String, Object?>.from(raw);
         final key = row['media_key'] as String?;
         if (key == null) continue;
@@ -370,7 +381,7 @@ final class XApiService {
         if (variants is List) {
           final mp4 =
               variants
-                  .whereType<Map>()
+                  .whereType<Map<Object?, Object?>>()
                   .where(
                     (item) =>
                         item['content_type'] == 'video/mp4' &&
@@ -417,7 +428,7 @@ final class XApiService {
     final rows = payload['data'];
     if (rows is! List) return const <XPost>[];
     return rows
-        .whereType<Map>()
+        .whereType<Map<Object?, Object?>>()
         .map((raw) {
           final row = Map<String, Object?>.from(raw);
           final attachments = row['attachments'];
@@ -447,6 +458,13 @@ final class XApiService {
         .where((post) => post.id.isNotEmpty)
         .toList();
   }
+
+  static List<XPost> parseHomeTimeline(
+    Map<String, Object?> payload, {
+    required String ownUserId,
+  }) => parseTimeline(
+    payload,
+  ).where((post) => post.authorId != ownUserId).toList(growable: false);
 }
 
 final class XApiException implements Exception {

@@ -78,6 +78,26 @@ authenticated features.
 
 ## Install and run
 
+Each successful GitHub Actions build publishes native desktop installers plus
+portable archives:
+
+- Linux: `TwitchFreedom-Linux-x64.deb` and `.tar.gz`
+- Windows: `TwitchFreedom-Windows-x64.msi` and `.zip`
+- macOS: `TwitchFreedom-macOS.dmg` and `.zip`
+
+Download the artifact for your operating system from the workflow run. Verify
+it with the accompanying `.sha256` file before opening it. These automated
+technical builds are currently unsigned, so Windows SmartScreen or macOS
+Gatekeeper may require an explicit local approval. Production releases still
+need protected code signing and Apple notarization.
+
+The Debian installer places the application under `/opt/twitch-freedom` and
+adds `/usr/bin/twitch-freedom` plus a desktop-menu entry. The MSI installs for
+all users under Program Files and creates a Start Menu shortcut. The DMG
+contains the application and an Applications link for drag-and-drop install.
+
+### Build from source
+
 Install Flutter first, then install the Linux build packages:
 
 ```bash
@@ -223,8 +243,10 @@ retroactively add scopes to an existing token.
 Loads the authenticated account's reverse-chronological home timeline. It does
 not use the public account handle. Opening X mode, selecting **My Feed**, or
 pressing Refresh requests this timeline directly with the OAuth user token.
-Auto refresh is opt-in, runs at most every two minutes while unlocked, and keeps
-at most 100 unique posts in memory.
+Auto refresh starts after the first successful My Feed load, runs at most every
+two minutes while unlocked, requests only posts newer than the newest known ID,
+and keeps at most 250 unique posts in memory. Posts authored by the connected
+account are excluded from My Feed.
 
 ### Account
 

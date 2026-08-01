@@ -111,6 +111,8 @@ void _repairToolPermissions() {
   if (Platform.isWindows) return;
   for (final path in <String>[
     'tool/bootstrap.sh',
+    'tool/package_linux_deb.sh',
+    'tool/package_macos_dmg.sh',
     'tool/verify_linux_ready.sh',
   ]) {
     final file = File(path);

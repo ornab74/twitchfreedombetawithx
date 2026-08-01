@@ -16,6 +16,8 @@ concurrency:
 
 jobs:
   desktop:
+    env:
+      APP_VERSION: 0.4.1
     strategy:
       fail-fast: false
       matrix:
@@ -82,22 +84,32 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          choco install wixtoolset --version=3.14.1.20250415 --yes --no-progress
+          $wixRoot = Join-Path ${env:ProgramFiles(x86)} 'WiX Toolset v3.*\bin'
+          $wixBin = (Get-Item $wixRoot | Sort-Object FullName -Descending | Select-Object -First 1).FullName
+          if (-not $wixBin) { throw 'WiX Toolset installation was not found.' }
+          $env:PATH = "$wixBin;$env:PATH"
+          ./tool/package_windows_msi.ps1 -SourceDir build/windows/x64/runner/Release -Output ${{ matrix.artifact }}.msi -Version $env:APP_VERSION
           Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath ${{ matrix.artifact }}.zip
-          (Get-FileHash ${{ matrix.artifact }}.zip -Algorithm SHA256).Hash.ToLower() + "  ${{ matrix.artifact }}.zip" | Out-File -Encoding ascii ${{ matrix.artifact }}.sha256
+          @('${{ matrix.artifact }}.msi', '${{ matrix.artifact }}.zip') | ForEach-Object {
+            (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower() + "  $_"
+          } | Out-File -Encoding ascii ${{ matrix.artifact }}.sha256
 
       - name: Package macOS
         if: runner.os == 'macOS'
         shell: bash
         run: |
+          ./tool/package_macos_dmg.sh build/macos/Build/Products/Release/twitch_freedom_ultra.app "${{ matrix.artifact }}.dmg"
           ditto -c -k --sequesterRsrc --keepParent build/macos/Build/Products/Release/twitch_freedom_ultra.app "${{ matrix.artifact }}.zip"
-          shasum -a 256 "${{ matrix.artifact }}.zip" > "${{ matrix.artifact }}.sha256"
+          shasum -a 256 "${{ matrix.artifact }}.dmg" "${{ matrix.artifact }}.zip" > "${{ matrix.artifact }}.sha256"
 
       - name: Package Linux
         if: runner.os == 'Linux'
         shell: bash
         run: |
+          ./tool/package_linux_deb.sh build/linux/x64/release/bundle "${{ matrix.artifact }}.deb" "$APP_VERSION"
           tar -C build/linux/x64/release/bundle -czf "${{ matrix.artifact }}.tar.gz" .
-          sha256sum "${{ matrix.artifact }}.tar.gz" > "${{ matrix.artifact }}.sha256"
+          sha256sum "${{ matrix.artifact }}.deb" "${{ matrix.artifact }}.tar.gz" > "${{ matrix.artifact }}.sha256"
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:

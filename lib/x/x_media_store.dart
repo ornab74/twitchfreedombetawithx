@@ -124,7 +124,7 @@ final class XMediaStore {
         final envelope = box.concatenation();
         final size = ByteData(4)..setUint32(0, envelope.length, Endian.big);
         output!.writeFromSync(size.buffer.asUint8List());
-        output!.writeFromSync(envelope);
+        output.writeFromSync(envelope);
         chunkIndex++;
       }
 
