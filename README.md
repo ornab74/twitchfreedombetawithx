@@ -37,7 +37,9 @@ AI and transcript storage are off until you enable them.
 
 ## Demo
 
-[Play the Twitch Freedom demo video on GitHub](demo/demo.webm)
+<video width="640" height="360" controls muted autoplay>
+  <source src="demo/demo.webm" type="video/webm" />
+</video>
 
 ## Feature reference
 
