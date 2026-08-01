@@ -37,9 +37,7 @@ AI and transcript storage are off until you enable them.
 
 ## Demo
 
-<video width="640" height="360" controls muted autoplay>
-  <source src="demo/demo.mp4" type="video/mp4" />
-</video>
+[Play the Twitch Freedom demo](https://github.com/ornab74/twitchfreedombetawithx/raw/refs/heads/main/demo/demo.mp4)
 
 ## Feature reference
 
