@@ -484,6 +484,39 @@ final class VaultRepository {
     );
   }
 
+  Future<void> putBytes(
+    String logicalType,
+    String logicalId,
+    Uint8List clear,
+  ) async {
+    if (!isUnlocked) throw StateError('Vault is locked.');
+    final recordId = await _obscuredId(logicalType, logicalId);
+    final version = _activeDekVersion;
+    final envelope = await _encrypt(
+      clear,
+      _deks[version]!,
+      utf8.encode('$logicalType:$recordId:$version'),
+    );
+    _db!.execute(
+      '''
+      INSERT INTO encrypted_records(record_id, logical_type, key_version, envelope, updated_at)
+      VALUES(?, ?, ?, ?, ?)
+      ON CONFLICT(record_id) DO UPDATE SET
+        logical_type = excluded.logical_type,
+        key_version = excluded.key_version,
+        envelope = excluded.envelope,
+        updated_at = excluded.updated_at
+      ''',
+      <Object?>[
+        recordId,
+        logicalType,
+        version,
+        envelope,
+        DateTime.now().toUtc().toIso8601String(),
+      ],
+    );
+  }
+
   /// Encrypts records independently, then commits their envelopes in one WAL
   /// transaction. This keeps per-record authentication while avoiding an
   /// expensive durable SQLite commit for every high-volume chat event.
@@ -559,6 +592,29 @@ final class VaultRepository {
     );
     return Map<String, Object?>.from(
       jsonDecode(utf8.decode(clear)) as Map<Object?, Object?>,
+    );
+  }
+
+  Future<Uint8List?> getBytes(String logicalType, String logicalId) async {
+    if (!isUnlocked) throw StateError('Vault is locked.');
+    final recordId = await _obscuredId(logicalType, logicalId);
+    final rows = _db!.select(
+      'SELECT key_version, envelope FROM encrypted_records WHERE record_id = ? AND logical_type = ?',
+      <Object?>[recordId, logicalType],
+    );
+    if (rows.isEmpty) return null;
+    final row = rows.first;
+    final version = row['key_version'] as int;
+    final dek = _deks[version];
+    if (dek == null) {
+      throw StateError('Record references unavailable key version $version.');
+    }
+    return Uint8List.fromList(
+      await _decrypt(
+        row['envelope'] as Uint8List,
+        dek,
+        utf8.encode('$logicalType:$recordId:$version'),
+      ),
     );
   }
 

@@ -1,14 +1,13 @@
 import 'package:flutter_gemma/flutter_gemma.dart';
-import 'package:flutter_gemma_litertlm/flutter_gemma_litertlm.dart';
 import 'package:flutter_gemma_speech/flutter_gemma_speech.dart';
 
-Future<void>? _initialization;
+Future<void>? _speechInitialization;
 
-/// Initializes native AI backends only after the encrypted workspace unlocks
-/// and the user explicitly requests an AI or speech operation.
-Future<void> ensureLocalAiRuntimeInitialized() {
-  return _initialization ??= FlutterGemma.initialize(
-    inferenceEngines: const [LiteRtLmEngine()],
+/// Registers only the speech backend. Gemma's LiteRT-LM engine is opened
+/// directly by GemmaRuntime when the user explicitly requests the LLM, so a
+/// caption-only session never loads or registers the multi-gigabyte LLM path.
+Future<void> ensureSpeechRuntimeInitialized() {
+  return _speechInitialization ??= FlutterGemma.initialize(
     sttBackends: const [LiteRtSttBackend()],
     maxDownloadRetries: 3,
   );

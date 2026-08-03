@@ -47,6 +47,48 @@ Uint8List prepareMoonshinePcmWindow(Uint8List pcm) {
   return window;
 }
 
+bool pcmLikelyContainsSpeech(Uint8List pcm) {
+  if (pcm.lengthInBytes < 3200) return false;
+  var peak = 0;
+  var energy = 0.0;
+  var samples = 0;
+  // Sampling every fourth PCM frame is sufficient for a conservative energy
+  // gate and keeps this check negligible compared with model inference.
+  for (var offset = 0; offset + 1 < pcm.lengthInBytes; offset += 8) {
+    var sample = pcm[offset] | (pcm[offset + 1] << 8);
+    if (sample >= 0x8000) sample -= 0x10000;
+    final magnitude = sample.abs();
+    if (magnitude > peak) peak = magnitude;
+    energy += sample * sample;
+    samples += 1;
+  }
+  if (samples == 0 || peak < 420) return false;
+  return energy / samples >= 110 * 110;
+}
+
+String sanitizeCaptionTranscript(String value, {String previous = ''}) {
+  final clean = value
+      .replaceAll(RegExp(r'[\x00-\x1F]'), ' ')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+  if (clean.isEmpty || RegExp(r'^\[[^\]]+\]$').hasMatch(clean)) return '';
+  final wordPattern = RegExp(r"[A-Za-z0-9À-ɏ']+");
+  final words = wordPattern
+      .allMatches(clean.toLowerCase())
+      .map((match) => match.group(0)!)
+      .toList(growable: false);
+  if (words.isEmpty) return '';
+  if (words.length >= 4 && words.toSet().length / words.length < .34) {
+    return '';
+  }
+  final normalized = words.join(' ');
+  final prior = wordPattern
+      .allMatches(previous.toLowerCase())
+      .map((match) => match.group(0)!)
+      .join(' ');
+  return normalized == prior ? '' : clean;
+}
+
 /// Privacy-preserving speech context pipeline. Moonshine is installed from
 /// revision-pinned public artifacts. Playback audio is reduced to a bounded
 /// five-second 16 kHz mono PCM window, transcribed locally, overwritten on a
@@ -70,6 +112,7 @@ final class SpeechContextService {
       StreamController<SpeechContextState>.broadcast();
 
   SpeechRecognizer? _recognizer;
+  String _lastTranscript = '';
   SpeechContextState _current = const SpeechContextState(
     installed: false,
     active: false,
@@ -132,7 +175,7 @@ final class SpeechContextService {
     }
 
     try {
-      await ensureLocalAiRuntimeInitialized();
+      await ensureSpeechRuntimeInitialized();
       update('Installing revision-pinned Moonshine speech pack…');
       await FlutterGemma.installStt()
           .modelFromNetwork(AppConfig.moonshineModelUri.toString())
@@ -199,7 +242,7 @@ final class SpeechContextService {
 
   Future<AppResult<void>> attachActiveMoonshine() async {
     try {
-      await ensureLocalAiRuntimeInitialized();
+      await ensureSpeechRuntimeInitialized();
       await _recognizer?.close();
       _recognizer = await FlutterGemma.getActiveStt();
       _emit(
@@ -290,7 +333,15 @@ final class SpeechContextService {
         );
       }
       final bytes = prepareMoonshinePcmWindow(rawBytes);
-      final text = (await recognizer.transcribe(bytes)).trim();
+      if (!pcmLikelyContainsSpeech(bytes)) {
+        return const AppError<TranscriptSegment>(
+          AppFailure('speech_silence', 'No probable speech in this window.'),
+        );
+      }
+      final text = sanitizeCaptionTranscript(
+        await recognizer.transcribe(bytes),
+        previous: _lastTranscript,
+      );
       if (text.isEmpty) {
         return const AppError<TranscriptSegment>(
           AppFailure(
@@ -299,6 +350,7 @@ final class SpeechContextService {
           ),
         );
       }
+      _lastTranscript = text;
       final segment = TranscriptSegment(
         channel: channel,
         startedAt: start,
@@ -368,6 +420,7 @@ final class SpeechContextService {
   Future<void> deactivate() async {
     await _recognizer?.close();
     _recognizer = null;
+    _lastTranscript = '';
     _emit(
       SpeechContextState(
         installed: _current.installed,

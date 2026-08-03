@@ -72,6 +72,7 @@ final class HybridPqCrypto {
   static const String _identityId = 'device-v1';
   static const String _linuxX64LibrarySha256 =
       '6dc25767b485445c20aa33f00a0fcc7c60016f6750f786021cc7a324517fadf9';
+  static String? _verifiedBundledLibrary;
 
   final VaultRepository _vault;
   final X25519 _x25519 = X25519();
@@ -335,17 +336,29 @@ final class HybridPqCrypto {
 
   void _configureBundledLibrary() {
     if (!Platform.isLinux) return;
-    final bundled = File(
-      '${File(Platform.resolvedExecutable).parent.path}/lib/liboqs.so',
-    );
-    if (bundled.existsSync()) {
-      final digest = hashes.sha256
-          .convert(bundled.readAsBytesSync())
-          .toString();
-      if (digest != _linuxX64LibrarySha256) {
-        throw StateError(
-          'Bundled ML-KEM provider failed integrity verification.',
-        );
+    final candidates = <File>[
+      File('${File(Platform.resolvedExecutable).parent.path}/lib/liboqs.so'),
+      // flutter_tester runs from the SDK rather than the application bundle.
+      // The repository provider is accepted only after the same pinned digest
+      // verification, so tests exercise real ML-KEM without a weak fallback.
+      File('native/linux/liboqs.so').absolute,
+    ];
+    final bundled = candidates.where((file) => file.existsSync()).firstOrNull;
+    if (bundled != null) {
+      final path = bundled.absolute.path;
+      if (_verifiedBundledLibrary != path) {
+        final digest = hashes.sha256
+            .convert(bundled.readAsBytesSync())
+            .toString();
+        if (digest != _linuxX64LibrarySha256) {
+          throw StateError(
+            'Bundled ML-KEM provider failed integrity verification.',
+          );
+        }
+        // The dynamic provider is loaded once per process. Re-reading and
+        // hashing the same shared object for every encapsulation added CPU and
+        // UI-isolate I/O without strengthening the already-loaded library.
+        _verifiedBundledLibrary = path;
       }
       LibOQSLoader.customPaths = LibraryPaths(
         linuxX64: bundled.path,
@@ -420,4 +433,11 @@ final class HybridPqCrypto {
   }
 
   void _wipe(Uint8List? value) => value?.fillRange(0, value.length, 0);
+}
+
+extension _FirstFileOrNull on Iterable<File> {
+  File? get firstOrNull {
+    final iterator = this.iterator;
+    return iterator.moveNext() ? iterator.current : null;
+  }
 }

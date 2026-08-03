@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
@@ -19,6 +18,8 @@ final class ThumbnailStore {
        _client = client ?? http.Client();
 
   static const int _maximumBytes = 1024 * 1024;
+  static const List<int> _magic = <int>[0x54, 0x46, 0x54, 0x48, 0x01];
+  static const int _headerBytes = 13;
   final VaultRepository _vault;
   final SecureLog _log;
   final http.Client _client;
@@ -26,20 +27,26 @@ final class ThumbnailStore {
   Future<Uint8List?> load(String channel) async {
     final normalized = _channel(channel);
     if (normalized == null) return null;
-    final record = await _vault.getJson('channel_thumbnail', normalized);
+    final record = await _vault.getBytes('channel_thumbnail', normalized);
     if (record == null) return null;
-    final expiresAt = DateTime.tryParse(record['expiresAt']?.toString() ?? '');
-    if (expiresAt == null || !expiresAt.isAfter(DateTime.now().toUtc())) {
+    if (record.lengthInBytes < _headerBytes ||
+        !_magic.indexed.every((entry) => record[entry.$1] == entry.$2)) {
       await _vault.delete('channel_thumbnail', normalized);
       return null;
     }
-    try {
-      final bytes = base64Decode(record['bytes']! as String);
-      return _validImage(bytes) ? Uint8List.fromList(bytes) : null;
-    } catch (_) {
+    final expiresAtMillis = ByteData.sublistView(
+      record,
+      _magic.length,
+      _headerBytes,
+    ).getInt64(0, Endian.big);
+    if (expiresAtMillis <= DateTime.now().toUtc().millisecondsSinceEpoch) {
       await _vault.delete('channel_thumbnail', normalized);
       return null;
     }
+    final bytes = Uint8List.sublistView(record, _headerBytes);
+    if (_validImage(bytes)) return bytes;
+    await _vault.delete('channel_thumbnail', normalized);
+    return null;
   }
 
   Future<Uint8List?> fetchAndStore({
@@ -75,17 +82,18 @@ final class ThumbnailStore {
       final bytes = builder.takeBytes();
       if (!_validImage(bytes)) return null;
       final now = DateTime.now().toUtc();
-      await _vault.putJson('channel_thumbnail', normalized, <String, Object?>{
-        'channel': normalized,
-        'bytes': base64Encode(bytes),
-        'contentType': type,
-        'storedAt': now.toIso8601String(),
-        'expiresAt': now
-            .add(
-              followed ? const Duration(days: 30) : const Duration(hours: 24),
-            )
-            .toIso8601String(),
-      });
+      final expiresAt = now.add(
+        followed ? const Duration(days: 30) : const Duration(hours: 24),
+      );
+      final record = Uint8List(_headerBytes + bytes.lengthInBytes)
+        ..setRange(0, _magic.length, _magic)
+        ..setRange(_headerBytes, _headerBytes + bytes.lengthInBytes, bytes);
+      ByteData.sublistView(
+        record,
+        _magic.length,
+        _headerBytes,
+      ).setInt64(0, expiresAt.millisecondsSinceEpoch, Endian.big);
+      await _vault.putBytes('channel_thumbnail', normalized, record);
       return bytes;
     } catch (error) {
       _log.warning('Thumbnail cache request failed for $normalized: $error');
@@ -117,8 +125,14 @@ final class ThumbnailStore {
         bytes[2] == 0x4e &&
         bytes[3] == 0x47;
     final webp =
-        ascii.decode(bytes.sublist(0, 4), allowInvalid: true) == 'RIFF' &&
-        ascii.decode(bytes.sublist(8, 12), allowInvalid: true) == 'WEBP';
+        bytes[0] == 0x52 &&
+        bytes[1] == 0x49 &&
+        bytes[2] == 0x46 &&
+        bytes[3] == 0x46 &&
+        bytes[8] == 0x57 &&
+        bytes[9] == 0x45 &&
+        bytes[10] == 0x42 &&
+        bytes[11] == 0x50;
     return jpeg || png || webp;
   }
 

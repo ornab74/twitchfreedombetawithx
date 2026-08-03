@@ -32,15 +32,26 @@ void main() {
     expect(native['demuxer-max-back-bytes'], '0');
     expect(native['hwdec'], 'no');
     expect(native['vd-lavc-threads'], '3');
+    expect(native.containsKey('framedrop'), isFalse);
+    expect(native.containsKey('video-sync'), isFalse);
+    expect(native['scale'], 'bilinear');
+
+    final automaticFallback = standard.nativeProperties(
+      softwareRendering: false,
+    );
+    expect(automaticFallback['hwdec'], 'auto-safe');
+    expect(automaticFallback['vd-lavc-threads'], '3');
+    expect(automaticFallback.containsKey('framedrop'), isFalse);
   });
 
   test('software video output caps expensive resolutions and frame rates', () {
-    expect(cpuSafePlaybackQuality('best'), '720p');
-    expect(cpuSafePlaybackQuality('1080p60'), '720p');
-    expect(cpuSafePlaybackQuality('720p60'), '720p');
-    expect(cpuSafePlaybackQuality('720p'), '720p');
+    expect(cpuSafePlaybackQuality('best'), '480p60');
+    expect(cpuSafePlaybackQuality('1080p60'), '480p60');
+    expect(cpuSafePlaybackQuality('720p60'), '480p60');
+    expect(cpuSafePlaybackQuality('720p'), '480p');
     expect(cpuSafePlaybackQuality('480p'), '480p');
     expect(cpuSafePlaybackQuality('audio_only'), 'audio_only');
+    expect(cpuSafePlaybackQuality('best', maximumHeight: 360), '360p60');
   });
 
   test('software texture scaling reduces native pixel transfer dimensions', () {

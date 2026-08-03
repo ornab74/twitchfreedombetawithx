@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../core/models.dart';
+import '../../core/result.dart';
 import '../../state/app_controller.dart';
 import '../theme.dart';
 import 'glass_panel.dart';
@@ -44,6 +45,7 @@ final class _PlayerPanelState extends State<PlayerPanel> {
     _busy = widget.controller.busy;
     widget.controller.navigationRevision.addListener(_handleNavigationUpdate);
     widget.controller.shellRevision.addListener(_handleShellUpdate);
+    widget.controller.preferencesRevision.addListener(_handlePreferencesUpdate);
     widget.controller.playback.addListener(_handlePlaybackUpdate);
   }
 
@@ -81,6 +83,10 @@ final class _PlayerPanelState extends State<PlayerPanel> {
     final next = widget.controller.busy;
     if (!mounted || next == _busy) return;
     setState(() => _busy = next);
+  }
+
+  void _handlePreferencesUpdate() {
+    if (mounted) setState(() {});
   }
 
   void _handlePlaybackUpdate() {
@@ -149,9 +155,13 @@ final class _PlayerPanelState extends State<PlayerPanel> {
       _handleNavigationUpdate,
     );
     oldWidget.controller.shellRevision.removeListener(_handleShellUpdate);
+    oldWidget.controller.preferencesRevision.removeListener(
+      _handlePreferencesUpdate,
+    );
     oldWidget.controller.playback.removeListener(_handlePlaybackUpdate);
     widget.controller.navigationRevision.addListener(_handleNavigationUpdate);
     widget.controller.shellRevision.addListener(_handleShellUpdate);
+    widget.controller.preferencesRevision.addListener(_handlePreferencesUpdate);
     widget.controller.playback.addListener(_handlePlaybackUpdate);
     _handleNavigationUpdate();
     _playbackView = _readPlaybackView();
@@ -253,6 +263,23 @@ final class _PlayerPanelState extends State<PlayerPanel> {
                     tooltip: 'Stop playback',
                     onPressed: active ? controller.stopPlayback : null,
                     icon: const Icon(Icons.stop_rounded),
+                  ),
+                  const SizedBox(width: 8),
+                  Semantics(
+                    button: true,
+                    selected: controller.preferences.ai.closedCaptions,
+                    label: controller.preferences.ai.closedCaptions
+                        ? 'Turn closed captions off'
+                        : 'Turn closed captions on',
+                    child: IconButton.filledTonal(
+                      tooltip: controller.preferences.ai.closedCaptions
+                          ? 'Closed captions on'
+                          : 'Closed captions off',
+                      onPressed: () => _toggleClosedCaptions(controller),
+                      isSelected: controller.preferences.ai.closedCaptions,
+                      selectedIcon: const Icon(Icons.closed_caption_rounded),
+                      icon: const Icon(Icons.closed_caption_off_rounded),
+                    ),
                   ),
                 ];
                 if (constraints.maxWidth >= 760) {
@@ -374,6 +401,15 @@ final class _PlayerPanelState extends State<PlayerPanel> {
     PlaybackHealth.failed => 'Attention',
   };
 
+  Future<void> _toggleClosedCaptions(AppController controller) async {
+    final enable = !controller.preferences.ai.closedCaptions;
+    final result = await controller.setClosedCaptions(enable);
+    if (!mounted || result is! AppError<void>) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(result.error.message)));
+  }
+
   @override
   void dispose() {
     final route = _fullscreenRoute;
@@ -385,6 +421,9 @@ final class _PlayerPanelState extends State<PlayerPanel> {
       _handleNavigationUpdate,
     );
     widget.controller.shellRevision.removeListener(_handleShellUpdate);
+    widget.controller.preferencesRevision.removeListener(
+      _handlePreferencesUpdate,
+    );
     widget.controller.playback.removeListener(_handlePlaybackUpdate);
     super.dispose();
   }
@@ -545,6 +584,7 @@ final class _OverlayControlsState extends State<_OverlayControls> {
   Timer? _hideTimer;
   bool _visible = true;
   double _unmutedVolume = 1;
+  DateTime _lastHideArm = DateTime.fromMillisecondsSinceEpoch(0);
 
   @override
   void initState() {
@@ -573,7 +613,13 @@ final class _OverlayControlsState extends State<_OverlayControls> {
     _scheduleHide();
   }
 
-  void _scheduleHide() {
+  void _scheduleHide({bool force = false}) {
+    final now = DateTime.now();
+    if (!force &&
+        now.difference(_lastHideArm) < const Duration(milliseconds: 500)) {
+      return;
+    }
+    _lastHideArm = now;
     _hideTimer?.cancel();
     _hideTimer = Timer(const Duration(seconds: 4), () {
       if (mounted && _visible) setState(() => _visible = false);
@@ -1001,7 +1047,7 @@ final class _TelemetryStripState extends State<_TelemetryStrip> {
     final playback = widget.controller.playback;
     final active = playback.playing || playback.buffering;
     if (active && _ticker == null) {
-      _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
+      _ticker = Timer.periodic(const Duration(seconds: 5), (_) {
         _appendSample();
         if (mounted) setState(() {});
       });

@@ -27,7 +27,8 @@ final class HlsMasterParser {
         for (var next = index + 1; next < lines.length; next++) {
           final candidate = lines[next].trim();
           if (candidate.isEmpty) continue;
-          if (candidate.startsWith('#')) break;
+          if (candidate.startsWith('#EXT-X-STREAM-INF:')) break;
+          if (candidate.startsWith('#')) continue;
           uriLine = candidate;
           index = next;
           break;
@@ -67,6 +68,28 @@ final class HlsMasterParser {
         );
       }
       if (variants.isEmpty) {
+        // Twitch normally returns a master playlist, but restricted, single-
+        // rendition, and edge-transcoded channels can return a directly
+        // playable media playlist. Preserve the already validated HTTPS URI
+        // instead of incorrectly reporting that no stream type exists.
+        final directMedia = lines.any(
+          (line) =>
+              line.trim().startsWith('#EXTINF:') ||
+              line.trim().startsWith('#EXT-X-TARGETDURATION:'),
+        );
+        if (directMedia && _trustedVariantUri(baseUri)) {
+          return AppSuccess<List<StreamVariant>>(<StreamVariant>[
+            StreamVariant(
+              name: 'source',
+              uri: baseUri,
+              bandwidth: 0,
+              height: null,
+              frameRate: null,
+              audioOnly: false,
+              codecs: '',
+            ),
+          ]);
+        }
         return const AppError<List<StreamVariant>>(
           AppFailure(
             'no_variants',
@@ -174,8 +197,9 @@ StreamVariant? selectVariant(List<StreamVariant> variants, String requested) {
 
 StreamVariant? selectCpuSafeVariant(
   List<StreamVariant> variants,
-  String requested,
-) {
+  String requested, {
+  int maximumHeight = 480,
+}) {
   if (requested.toLowerCase() == 'audio_only') {
     return selectVariant(variants, requested);
   }
@@ -183,7 +207,7 @@ StreamVariant? selectCpuSafeVariant(
       .where((StreamVariant item) => !item.audioOnly)
       .toList(growable: false);
   final safe = video
-      .where((StreamVariant item) => (item.height ?? 0) <= 720 && item.fps < 50)
+      .where((StreamVariant item) => (item.height ?? 0) <= maximumHeight)
       .toList(growable: false);
   if (safe.isNotEmpty) return selectVariant(safe, requested);
 
@@ -198,6 +222,57 @@ StreamVariant? selectCpuSafeVariant(
       return left.bandwidth.compareTo(right.bandwidth);
     });
   return fallback.firstOrNull;
+}
+
+List<StreamVariant> playbackVariantFallbacks(
+  List<StreamVariant> variants, {
+  required String requested,
+  required bool cpuSafe,
+  int maximumCpuHeight = 480,
+}) {
+  if (variants.isEmpty) return const <StreamVariant>[];
+  final primary = cpuSafe
+      ? selectCpuSafeVariant(
+          variants,
+          requested,
+          maximumHeight: maximumCpuHeight,
+        )
+      : selectVariant(variants, requested);
+  int portability(StreamVariant item) {
+    final codecs = item.codecs.toLowerCase();
+    if (codecs.isEmpty || codecs.contains('avc1') || codecs.contains('h264')) {
+      return 0;
+    }
+    return 1;
+  }
+
+  final wantsAudio = requested.toLowerCase() == 'audio_only';
+  final ordered = List<StreamVariant>.of(variants)
+    ..sort((left, right) {
+      // H.264/AAC and unspecified codec lists are the most portable across
+      // packaged mpv/FFmpeg versions. Then prefer 30 FPS and lower bandwidth.
+      final codec = portability(left).compareTo(portability(right));
+      if (codec != 0) return codec;
+      if (left.audioOnly != right.audioOnly) {
+        return left.audioOnly == wantsAudio ? -1 : 1;
+      }
+      final fps = left.fps.compareTo(right.fps);
+      if (fps != 0) return fps;
+      final height = (left.height ?? 10000).compareTo(right.height ?? 10000);
+      if (height != 0) return height;
+      return left.bandwidth.compareTo(right.bandwidth);
+    });
+  final output = <StreamVariant>[];
+  final seen = <String>{};
+  void add(StreamVariant? item) {
+    if (item != null && seen.add(item.uri.toString())) output.add(item);
+  }
+
+  add(primary);
+  for (final item in ordered) {
+    add(item);
+  }
+  return List<StreamVariant>.unmodifiable(output);
 }
 
 extension _FirstOrNull<T> on Iterable<T> {

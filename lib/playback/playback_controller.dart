@@ -15,18 +15,26 @@ import '../core/result.dart';
 import '../core/secure_log.dart';
 import 'linux_ffmpeg_adapter.dart';
 
-String cpuSafePlaybackQuality(String requested) {
+String cpuSafePlaybackQuality(String requested, {int maximumHeight = 480}) {
   final normalized = requested.trim().toLowerCase();
+  final cap = maximumHeight <= 360 ? 360 : 480;
+  final requestedFps = RegExp(r'(\d{2,3})$').firstMatch(normalized);
+  final preferSmooth =
+      normalized == 'best' ||
+      normalized == 'source' ||
+      (int.tryParse(requestedFps?.group(1) ?? '') ?? 30) >= 50;
+  final cappedLabel = '${cap}p${preferSmooth ? '60' : ''}';
   if (normalized == 'best' ||
       normalized == 'source' ||
-      normalized == '720p60') {
-    return '720p';
+      normalized == '720p60' ||
+      normalized == '720p') {
+    return cappedLabel;
   }
   final match = RegExp(r'^(\d{3,4})p(?:(\d{2,3}))?$').firstMatch(normalized);
   if (match == null) return requested;
   final height = int.tryParse(match.group(1)!) ?? 0;
   final fps = int.tryParse(match.group(2) ?? '') ?? 30;
-  return height > 720 || height == 720 && fps > 30 ? '720p' : requested;
+  return height > cap || height == cap && fps > 30 ? cappedLabel : requested;
 }
 
 /// Cross-platform player centered on media_kit, with video_player retained as a
@@ -98,6 +106,9 @@ final class UnifiedPlaybackController extends ChangeNotifier {
 
   bool get _softwareMediaOutput => willUseSoftwareOutput(_videoAcceleration);
 
+  bool get _boundedAutomaticLinuxOutput =>
+      Platform.isLinux && _videoAcceleration == VideoAcceleration.automatic;
+
   void _ensureMediaBackend(SecureVideoCachePolicy policy) {
     _cachePolicy = policy;
     if (_player != null) return;
@@ -110,6 +121,11 @@ final class UnifiedPlaybackController extends ChangeNotifier {
     );
     _player = player;
     final softwareRendering = _softwareMediaOutput;
+    // A packaged Linux build can have a writable DRM render node while still
+    // lacking a usable VA-API driver. mpv then falls back to CPU decoding at
+    // runtime. Keep Automatic mode's texture transfer bounded too; explicitly
+    // selecting Hardware / GPU remains the opt-in full-size path.
+    final boundedOutput = softwareRendering || _boundedAutomaticLinuxOutput;
     final highResolution = policy.maximumMiB >= 64;
     _videoController = VideoController(
       player,
@@ -126,7 +142,7 @@ final class UnifiedPlaybackController extends ChangeNotifier {
         // context-switch budget even while CPU usage remains low. Rendering it
         // at 75% preserves a sharp UI-sized image and gives Flutter headroom
         // to sustain compositor frames. 720p and below remain native size.
-        scale: softwareRendering
+        scale: boundedOutput
             ? .5
             : highResolution
             ? .75
@@ -620,26 +636,21 @@ final class SecureVideoCachePolicy {
         'demuxer-readahead-secs': (readahead.inMilliseconds / 1000)
             .toStringAsFixed(2),
         'cache-pause': 'no',
+        // These remain harmless when a hardware decoder is active, while
+        // bounding the silent FFmpeg software fallback common in packaged
+        // Linux installs whose render node exists but VA-API does not.
+        'vd-lavc-threads': '3',
+        'scale': 'bilinear',
+        'cscale': 'bilinear',
+        'dscale': 'bilinear',
+        'deband': 'no',
+        'interpolation': 'no',
         if (softwareRendering) ...<String, String>{
           // Enforce this at mpv level as well as VideoController level so
           // FFmpeg never probes VAAPI/VDPAU in Crostini.
           'hwdec': 'no',
           'vd-lavc-dr': 'no',
-          // Reserve CPU capacity for Flutter/GTK and local inference instead
-          // of letting FFmpeg spawn a decoder worker for every logical core.
-          'vd-lavc-threads': '3',
-        } else ...<String, String>{
-          'hwdec': 'auto-safe',
-          'vd-lavc-dr': 'yes',
-          // Favor stable frame delivery over costly high-order GPU shaders.
-          // Flutter displays the result inside a resizable panel, where these
-          // fast filters are visually appropriate and substantially cheaper.
-          'scale': 'bilinear',
-          'cscale': 'bilinear',
-          'dscale': 'bilinear',
-          'deband': 'no',
-          'interpolation': 'no',
-        },
+        } else ...<String, String>{'hwdec': 'auto-safe', 'vd-lavc-dr': 'yes'},
       };
 
   factory SecureVideoCachePolicy.forStream({

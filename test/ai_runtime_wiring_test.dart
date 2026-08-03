@@ -25,6 +25,34 @@ void main() {
       expect(trimmed.length, moonshineWindowBytes);
       expect(trimmed.last, 7);
     });
+
+    test('energy gate skips silence but retains probable speech', () {
+      expect(pcmLikelyContainsSpeech(Uint8List(8000)), isFalse);
+      final voiced = Uint8List(8000);
+      for (var offset = 0; offset + 1 < voiced.length; offset += 2) {
+        final sample = (offset ~/ 2).isEven ? 1200 : -1200;
+        final encoded = sample < 0 ? sample + 0x10000 : sample;
+        voiced[offset] = encoded & 0xff;
+        voiced[offset + 1] = encoded >> 8;
+      }
+      expect(pcmLikelyContainsSpeech(voiced), isTrue);
+    });
+
+    test('caption sanitizer rejects noise and repeated hallucinations', () {
+      expect(sanitizeCaptionTranscript('[MUSIC]'), isEmpty);
+      expect(sanitizeCaptionTranscript('hello hello hello hello'), isEmpty);
+      expect(
+        sanitizeCaptionTranscript(
+          'A useful sentence.',
+          previous: 'a useful sentence',
+        ),
+        isEmpty,
+      );
+      expect(
+        sanitizeCaptionTranscript('This is a useful sentence.'),
+        'This is a useful sentence.',
+      );
+    });
   });
 
   group('rolling transcript chunks', () {

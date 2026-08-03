@@ -94,6 +94,7 @@ final class AgentOrchestrator {
   }
 
   void addSpeechContext(String text) {
+    if (!_settings.enabled) return;
     final clean = text.trim();
     if (clean.isEmpty) return;
     final merged = mergeTranscriptChunks(_speechContext, clean);

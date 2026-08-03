@@ -77,6 +77,11 @@ final class _SettingsSheetState extends State<SettingsSheet> {
     });
   }
 
+  Future<void> _installMoonshine() async {
+    await widget.controller.installMoonshine();
+    if (mounted) setState(() {});
+  }
+
   @override
   Widget build(BuildContext context) {
     final tokens = freedomTokens(context);
@@ -434,6 +439,49 @@ final class _SettingsSheetState extends State<SettingsSheet> {
                       ),
                     ),
                     _Section(
+                      icon: Icons.closed_caption_rounded,
+                      title: 'Closed captions',
+                      subtitle:
+                          'Independent local Moonshine speech recognition. This does not enable or load Gemma agents.',
+                      child: Column(
+                        children: <Widget>[
+                          _Switch(
+                            'Closed captions on/off',
+                            widget.controller.speechState.installed
+                                ? 'Shows locally transcribed speech over the video. Raw audio is removed after each window.'
+                                : 'Install the Moonshine caption model below before enabling.',
+                            _draft.ai.closedCaptions,
+                            widget.controller.speechState.installed ||
+                                    _draft.ai.closedCaptions
+                                ? (bool value) => _setAi(
+                                    _draft.ai.copyWith(closedCaptions: value),
+                                  )
+                                : null,
+                          ),
+                          Align(
+                            alignment: Alignment.centerLeft,
+                            child: OutlinedButton.icon(
+                              onPressed: widget.controller.busy
+                                  ? null
+                                  : _installMoonshine,
+                              icon: const Icon(Icons.hearing_rounded),
+                              label: const Text(
+                                'Install Moonshine caption model',
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Align(
+                            alignment: Alignment.centerLeft,
+                            child: Text(
+                              'Caption model: ${widget.controller.speechState.message}',
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    _Section(
                       icon: Icons.auto_awesome_rounded,
                       title: 'Local Gemma agents',
                       subtitle:
@@ -441,8 +489,8 @@ final class _SettingsSheetState extends State<SettingsSheet> {
                       child: Column(
                         children: <Widget>[
                           _Switch(
-                            'Master AI switch',
-                            'No model loads or runs while disabled.',
+                            'Gemma AI on/off',
+                            'Controls only LLM agents. Closed captions remain independent.',
                             _draft.ai.enabled,
                             (bool value) =>
                                 _setAi(_draft.ai.copyWith(enabled: value)),
@@ -504,14 +552,6 @@ final class _SettingsSheetState extends State<SettingsSheet> {
                             _draft.ai.speechContext,
                             (bool value) => _setAi(
                               _draft.ai.copyWith(speechContext: value),
-                            ),
-                          ),
-                          _Switch(
-                            'Local closed captions',
-                            'Continuously shows low-cost Moonshine Tiny transcripts over the player.',
-                            _draft.ai.closedCaptions,
-                            (bool value) => _setAi(
-                              _draft.ai.copyWith(closedCaptions: value),
                             ),
                           ),
                           _Switch(
@@ -600,15 +640,6 @@ final class _SettingsSheetState extends State<SettingsSheet> {
                               ),
                               OutlinedButton.icon(
                                 onPressed: _draft.ai.enabled
-                                    ? widget.controller.installMoonshine
-                                    : null,
-                                icon: const Icon(Icons.hearing_rounded),
-                                label: const Text(
-                                  'Install Moonshine speech pack',
-                                ),
-                              ),
-                              OutlinedButton.icon(
-                                onPressed: _draft.ai.enabled
                                     ? widget.controller.runAiBatchNow
                                     : null,
                                 icon: const Icon(Icons.bolt_rounded),
@@ -619,10 +650,6 @@ final class _SettingsSheetState extends State<SettingsSheet> {
                           const SizedBox(height: 8),
                           Text(
                             'Gemma: ${widget.controller.gemma.current.message.isEmpty ? (widget.controller.gemma.current.loaded ? 'ready' : 'not loaded') : widget.controller.gemma.current.message}',
-                            style: Theme.of(context).textTheme.bodySmall,
-                          ),
-                          Text(
-                            'Speech: ${widget.controller.speechState.message}',
                             style: Theme.of(context).textTheme.bodySmall,
                           ),
                           if (widget.controller.speechState.busy)
@@ -1213,7 +1240,7 @@ final class _Switch extends StatelessWidget {
   final String title;
   final String subtitle;
   final bool value;
-  final ValueChanged<bool> onChanged;
+  final ValueChanged<bool>? onChanged;
 
   @override
   Widget build(BuildContext context) => SwitchListTile.adaptive(

@@ -67,4 +67,70 @@ variants/360.m3u8
       'https://video-edge.ttvnw.net/variants/360.m3u8',
     );
   });
+
+  test('accepts a trusted direct media playlist as adaptive source', () {
+    const media = '''#EXTM3U
+#EXT-X-TARGETDURATION:2
+#EXTINF:2.000,
+segment.ts
+''';
+    final result = parser.parse(media, base);
+    expect(result, isA<AppSuccess<List<StreamVariant>>>());
+    final variants = (result as AppSuccess<List<StreamVariant>>).value;
+    expect(variants.single.qualityLabel, 'source');
+    expect(variants.single.uri, base);
+  });
+
+  test('discovers a variant with harmless tags before its URI', () {
+    const manifest = '''#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=852x480,FRAME-RATE=30
+#EXT-X-TWITCH-PREFETCH:hint
+480/index.m3u8
+''';
+    final result = parser.parse(manifest, base);
+    expect(result, isA<AppSuccess<List<StreamVariant>>>());
+    expect(
+      (result as AppSuccess<List<StreamVariant>>).value.single.qualityLabel,
+      '480p',
+    );
+  });
+
+  test('fallbacks preserve requested type then portable renditions', () {
+    final variants = <StreamVariant>[
+      StreamVariant(
+        name: 'audio_only',
+        uri: base.resolve('audio.m3u8'),
+        bandwidth: 128000,
+        height: null,
+        frameRate: null,
+        audioOnly: true,
+        codecs: 'mp4a.40.2',
+      ),
+      StreamVariant(
+        name: '480p',
+        uri: base.resolve('480.m3u8'),
+        bandwidth: 1000000,
+        height: 480,
+        frameRate: 30,
+        audioOnly: false,
+        codecs: 'avc1.4D401F,mp4a.40.2',
+      ),
+    ];
+    expect(
+      playbackVariantFallbacks(
+        variants,
+        requested: 'audio_only',
+        cpuSafe: true,
+      ).first.audioOnly,
+      isTrue,
+    );
+    expect(
+      playbackVariantFallbacks(
+        variants,
+        requested: '480p',
+        cpuSafe: true,
+      ).first.audioOnly,
+      isFalse,
+    );
+  });
 }

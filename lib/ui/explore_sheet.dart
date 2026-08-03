@@ -57,7 +57,11 @@ final class _ExploreSheetState extends State<ExploreSheet> {
         child: Material(
           color: tokens.canvas,
           child: AnimatedBuilder(
-            animation: controller,
+            animation: Listenable.merge(<Listenable>[
+              controller.shellRevision,
+              controller.discoveryRevision,
+              controller.thumbnailRevision,
+            ]),
             builder: (BuildContext context, _) => Column(
               children: <Widget>[
                 Padding(
@@ -244,8 +248,8 @@ final class _PrivacyBadge extends StatelessWidget {
   const _PrivacyBadge();
   @override
   Widget build(BuildContext context) => const Chip(
-    avatar: Icon(Icons.image_not_supported_rounded, size: 16),
-    label: Text('No thumbnails'),
+    avatar: Icon(Icons.enhanced_encryption_rounded, size: 16),
+    label: Text('Encrypted previews'),
   );
 }
 
@@ -343,6 +347,11 @@ final class _DiscoveryCard extends StatelessWidget {
                         fit: BoxFit.cover,
                         width: 96,
                         height: 54,
+                        // Twitch preview files can be much larger than their
+                        // rendered tile. Decode near display size to avoid
+                        // wasting CPU and image-cache memory offscreen.
+                        cacheWidth: 192,
+                        cacheHeight: 108,
                         gaplessPlayback: true,
                         errorBuilder: (_, __, ___) =>
                             const Icon(Icons.live_tv_rounded),

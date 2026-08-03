@@ -188,8 +188,16 @@ final class StreamVariant {
   final String codecs;
 
   int get fps => frameRate?.round() ?? 30;
-  String get qualityLabel =>
-      audioOnly ? 'audio_only' : '${height ?? 0}p${fps >= 50 ? fps : ''}';
+  String get qualityLabel {
+    if (audioOnly) return 'audio_only';
+    if (height == null || height == 0) {
+      final normalized = name.trim().toLowerCase();
+      return normalized == 'chunked' || normalized == 'source'
+          ? 'source'
+          : 'adaptive';
+    }
+    return '${height}p${fps >= 50 ? fps : ''}';
+  }
 }
 
 @immutable

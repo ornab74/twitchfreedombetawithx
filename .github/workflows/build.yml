@@ -54,7 +54,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev \
-            libmpv-dev mpv ffmpeg libsecret-1-dev libjsoncpp-dev
+            libmpv-dev mpv ffmpeg libsecret-1-dev libjsoncpp-dev libssl-dev \
+            rpm zstd
 
       - name: Generate platform folders
         run: flutter create --platforms=android,ios,linux,macos,windows --org com.ornab74 .
@@ -66,6 +67,17 @@ jobs:
         run: |
           flutter pub get
           dart run tool/verify_resolved_packages.dart
+
+      - name: Build pinned ML-KEM-768 provider
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          ./tool/bootstrap_liboqs_linux.sh
+          echo "6dc25767b485445c20aa33f00a0fcc7c60016f6750f786021cc7a324517fadf9  native/linux/liboqs.so" | sha256sum --check --strict
+          file native/linux/liboqs.so | grep -q 'ELF 64-bit.*x86-64'
+
+      - name: Verify release version
+        run: dart run tool/verify_release_version.dart ${{ env.APP_VERSION }}
 
       - name: Verify Linux software-rendering policy
         if: runner.os == 'Linux'
@@ -80,6 +92,13 @@ jobs:
       - name: Build desktop bundle
         run: flutter build ${{ matrix.platform }} --release
 
+      - name: Verify bundled ML-KEM provider
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          test -s build/linux/x64/release/bundle/lib/liboqs.so
+          echo "6dc25767b485445c20aa33f00a0fcc7c60016f6750f786021cc7a324517fadf9  build/linux/x64/release/bundle/lib/liboqs.so" | sha256sum --check --strict
+
       - name: Package Windows
         if: runner.os == 'Windows'
         shell: pwsh
@@ -91,6 +110,9 @@ jobs:
           $env:PATH = "$wixBin;$env:PATH"
           ./tool/package_windows_msi.ps1 -SourceDir build/windows/x64/runner/Release -Output ${{ matrix.artifact }}.msi -Version $env:APP_VERSION
           Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath ${{ matrix.artifact }}.zip
+          if (-not (Test-Path '${{ matrix.artifact }}.msi') -or -not (Test-Path '${{ matrix.artifact }}.zip')) {
+            throw 'Expected Windows MSI and ZIP artifacts were not created.'
+          }
           @('${{ matrix.artifact }}.msi', '${{ matrix.artifact }}.zip') | ForEach-Object {
             (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower() + "  $_"
           } | Out-File -Encoding ascii ${{ matrix.artifact }}.sha256
@@ -101,6 +123,8 @@ jobs:
         run: |
           ./tool/package_macos_dmg.sh build/macos/Build/Products/Release/twitch_freedom_ultra.app "${{ matrix.artifact }}.dmg"
           ditto -c -k --sequesterRsrc --keepParent build/macos/Build/Products/Release/twitch_freedom_ultra.app "${{ matrix.artifact }}.zip"
+          test -s "${{ matrix.artifact }}.dmg"
+          test -s "${{ matrix.artifact }}.zip"
           shasum -a 256 "${{ matrix.artifact }}.dmg" "${{ matrix.artifact }}.zip" > "${{ matrix.artifact }}.sha256"
 
       - name: Package Linux
@@ -109,7 +133,25 @@ jobs:
         run: |
           ./tool/package_linux_deb.sh build/linux/x64/release/bundle "${{ matrix.artifact }}.deb" "$APP_VERSION"
           tar -C build/linux/x64/release/bundle -czf "${{ matrix.artifact }}.tar.gz" .
-          sha256sum "${{ matrix.artifact }}.deb" "${{ matrix.artifact }}.tar.gz" > "${{ matrix.artifact }}.sha256"
+          ./tool/package_linux_rpm.sh build/linux/x64/release/bundle "${{ matrix.artifact }}.rpm" "$APP_VERSION"
+          ./tool/package_linux_arch.sh build/linux/x64/release/bundle \
+            "${{ matrix.artifact }}.pkg.tar.zst" "$APP_VERSION" \
+            "${{ matrix.artifact }}-AUR.tar.gz" "${{ matrix.artifact }}.tar.gz"
+          for package in \
+            "${{ matrix.artifact }}.deb" \
+            "${{ matrix.artifact }}.rpm" \
+            "${{ matrix.artifact }}.pkg.tar.zst" \
+            "${{ matrix.artifact }}-AUR.tar.gz" \
+            "${{ matrix.artifact }}.tar.gz"; do
+            test -s "$package"
+          done
+          sha256sum \
+            "${{ matrix.artifact }}.deb" \
+            "${{ matrix.artifact }}.rpm" \
+            "${{ matrix.artifact }}.pkg.tar.zst" \
+            "${{ matrix.artifact }}-AUR.tar.gz" \
+            "${{ matrix.artifact }}.tar.gz" \
+            > "${{ matrix.artifact }}.sha256"
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:

@@ -12,7 +12,6 @@ import '../ai/gemma_runtime.dart';
 import '../ai/memory_store.dart';
 import '../ai/speech_context.dart';
 import '../chat/irc_client.dart';
-import '../core/app_config.dart';
 import '../core/boot_pipeline.dart';
 import '../core/models.dart';
 import '../core/pulse_scheduler.dart';
@@ -98,6 +97,8 @@ final class AppController extends ChangeNotifier {
   final ValueNotifier<int> aiRevision = ValueNotifier<int>(0);
   final ValueNotifier<int> preferencesRevision = ValueNotifier<int>(0);
   final ValueNotifier<int> xRevision = ValueNotifier<int>(0);
+  final ValueNotifier<int> discoveryRevision = ValueNotifier<int>(0);
+  final ValueNotifier<int> thumbnailRevision = ValueNotifier<int>(0);
   final ValueNotifier<PulseSnapshot?> schedulerTelemetry =
       ValueNotifier<PulseSnapshot?>(null);
   late final VaultRepository vault;
@@ -163,6 +164,7 @@ final class AppController extends ChangeNotifier {
   Timer? _xRefreshTimer;
   Timer? _liveStatusTimer;
   bool _liveStatusRefreshInFlight = false;
+  int _discoveryGeneration = 0;
   final Map<String, ChatMessage> _pendingChatPersistence =
       <String, ChatMessage>{};
   final Queue<DateTime> _recentChatTimes = Queue<DateTime>();
@@ -1041,45 +1043,68 @@ final class AppController extends ChangeNotifier {
             ? 'audio_only'
             : (quality ?? record.quality);
         final originalQuality = requestedQuality;
+        final softwareOutput = playback.willUseSoftwareOutput(
+          _preferences.videoAcceleration,
+        );
         final constrainVideo =
             requestedMode == PlaybackMode.video &&
-            playback.willUseSoftwareOutput(_preferences.videoAcceleration) &&
+            softwareOutput &&
             !const <String>{'1', 'true', 'yes'}.contains(
               (Platform.environment['TWITCH_FREEDOM_ALLOW_HIGH_RES_SOFTWARE'] ??
                       '')
                   .toLowerCase(),
             );
         if (constrainVideo) {
-          requestedQuality = cpuSafePlaybackQuality(requestedQuality);
+          requestedQuality = cpuSafePlaybackQuality(
+            requestedQuality,
+            maximumHeight: softwareOutput ? 360 : 480,
+          );
         }
-        final variant = constrainVideo
-            ? selectCpuSafeVariant(value.variants, requestedQuality)
-            : selectVariant(value.variants, requestedQuality);
-        if (variant == null)
+        final fallbacks = playbackVariantFallbacks(
+          value.variants,
+          requested: requestedQuality,
+          cpuSafe: constrainVideo,
+          maximumCpuHeight: softwareOutput ? 360 : 480,
+        );
+        if (fallbacks.isEmpty)
           return const AppError<void>(
             AppFailure(
               'quality_unavailable',
               'No compatible stream variant is available.',
             ),
           );
+        final variant = fallbacks.first;
         if (constrainVideo && variant.qualityLabel != originalQuality) {
           _status =
               'CPU-safe playback: $originalQuality capped at ${variant.qualityLabel}.';
           log.info(_status);
           _pulse(shell: true);
         }
-        final played = await playback.play(
-          channel: record.channel,
-          variant: variant,
-          volume: record.volume,
-          preferNativeBackend: preferNative,
-          lowLatency: _preferences.lowLatency,
-          acceleration: _preferences.videoAcceleration,
+        AppResult<void> played = const AppError<void>(
+          AppFailure('playback_candidates_exhausted', 'No rendition started.'),
         );
+        var playedVariant = variant;
+        // Limit retries to avoid hammering Twitch when a channel is genuinely
+        // unavailable. Most failures recover on the first alternate rendition.
+        for (final candidate in fallbacks.take(4)) {
+          playedVariant = candidate;
+          played = await playback.play(
+            channel: record.channel,
+            variant: candidate,
+            volume: record.volume,
+            preferNativeBackend: preferNative,
+            lowLatency: _preferences.lowLatency,
+            acceleration: _preferences.videoAcceleration,
+          );
+          if (played is AppSuccess<void>) break;
+          log.warning(
+            'Playback rendition ${candidate.qualityLabel} failed; trying a compatible fallback.',
+          );
+        }
         if (played is AppSuccess<void>) {
           final updated = record.copyWith(
             playbackMode: requestedMode,
-            quality: variant.qualityLabel,
+            quality: playedVariant.qualityLabel,
             updatedAt: DateTime.now(),
             lastPlayedAt: DateTime.now(),
             playCount: record.playCount + 1,
@@ -1201,6 +1226,7 @@ final class AppController extends ChangeNotifier {
   }
 
   Future<AppResult<List<DiscoveryStream>>> searchDiscovery(String query) async {
+    final generation = ++_discoveryGeneration;
     _setBusy(true, 'Searching Twitch text metadata…');
     try {
       final normalized = query.trim();
@@ -1224,6 +1250,7 @@ final class AppController extends ChangeNotifier {
                     as AppError<List<DiscoveryStream>>)
                 .error;
         _discovery = <DiscoveryStream>[];
+        discoveryRevision.value += 1;
         _setError(error.message);
         return AppError<List<DiscoveryStream>>(error);
       }
@@ -1236,6 +1263,7 @@ final class AppController extends ChangeNotifier {
         final reranked = await agents.rerankDiscovery(
           preference: _preferences.discovery,
           candidates: candidates
+              .take(100)
               .map(
                 (DiscoveryStream item) => <String, Object?>{
                   'id': item.id,
@@ -1271,8 +1299,12 @@ final class AppController extends ChangeNotifier {
         }
       }
       _discovery = candidates;
-      notifyListeners();
-      unawaited(_cacheDiscoveryThumbnails(candidates));
+      final activeChannels = candidates.map((item) => item.channel).toSet();
+      _thumbnailBytes.removeWhere(
+        (channel, _) => !activeChannels.contains(channel),
+      );
+      discoveryRevision.value += 1;
+      unawaited(_cacheDiscoveryThumbnails(candidates, generation));
       return AppSuccess<List<DiscoveryStream>>(candidates);
     } catch (cause) {
       const message = 'Could not load Twitch discovery right now.';
@@ -1283,6 +1315,7 @@ final class AppController extends ChangeNotifier {
         retryable: true,
       );
       _discovery = <DiscoveryStream>[];
+      discoveryRevision.value += 1;
       _setError(message);
       return AppError<List<DiscoveryStream>>(failure);
     } finally {
@@ -1292,21 +1325,49 @@ final class AppController extends ChangeNotifier {
 
   Future<void> _cacheDiscoveryThumbnails(
     Iterable<DiscoveryStream> streams,
+    int generation,
   ) async {
-    for (final item in streams.take(80)) {
-      if (item.thumbnailUrl.isEmpty ||
-          _thumbnailBytes.containsKey(item.channel)) {
-        continue;
-      }
-      final bytes = await thumbnails.fetchAndStore(
-        channel: item.channel,
-        url: item.thumbnailUrl,
-        followed: _streams.any((saved) => saved.channel == item.channel),
+    final pending = streams
+        // Encrypt the first useful viewport eagerly. Remaining channels are
+        // fetched by later searches instead of performing dozens of image
+        // decryptions and durable database commits in one CPU burst.
+        .take(24)
+        .where(
+          (item) =>
+              item.thumbnailUrl.isNotEmpty &&
+              !_thumbnailBytes.containsKey(item.channel),
+        )
+        .toList(growable: false);
+    // Keep network and image-decryption work bounded. A larger fan-out creates
+    // noticeable CPU bursts on software-rendered desktops when each completed
+    // image is decoded by the list at roughly the same time.
+    const concurrency = 4;
+    var anyChanged = false;
+    for (var offset = 0; offset < pending.length; offset += concurrency) {
+      if (_disposed || generation != _discoveryGeneration) return;
+      final batch = pending.skip(offset).take(concurrency);
+      final loaded = await Future.wait(
+        batch.map((item) async {
+          final bytes = await thumbnails.fetchAndStore(
+            channel: item.channel,
+            url: item.thumbnailUrl,
+            followed: _streams.any((saved) => saved.channel == item.channel),
+          );
+          return (channel: item.channel, bytes: bytes);
+        }),
       );
-      if (bytes != null && !_disposed) {
-        _thumbnailBytes[item.channel] = bytes;
-        notifyListeners();
+      if (_disposed || generation != _discoveryGeneration) return;
+      for (final item in loaded) {
+        if (item.bytes != null) {
+          _thumbnailBytes[item.channel] = item.bytes!;
+          anyChanged = true;
+        }
       }
+    }
+    // One list rebuild is enough; rebuilding after each decrypted batch made
+    // every visible card relayout and re-resolve its image repeatedly.
+    if (anyChanged && !_disposed && generation == _discoveryGeneration) {
+      thumbnailRevision.value += 1;
     }
   }
 
@@ -1382,6 +1443,21 @@ final class AppController extends ChangeNotifier {
       preferences: true,
     );
     notifyListeners();
+  }
+
+  Future<AppResult<void>> setClosedCaptions(bool enabled) async {
+    if (enabled && !speech.current.installed) {
+      const failure = AppFailure(
+        'speech_pack_missing',
+        'Install the Moonshine speech pack in Settings before enabling closed captions.',
+      );
+      _setError(failure.message);
+      return const AppError<void>(failure);
+    }
+    final ai = _preferences.ai.copyWith(closedCaptions: enabled);
+    if (!enabled) _speechText = '';
+    await updatePreferences(_preferences.copyWith(ai: ai));
+    return const AppSuccess<void>(null);
   }
 
   Future<AppResult<void>> installAndLoadGemma() async {
@@ -1481,6 +1557,13 @@ final class AppController extends ChangeNotifier {
       agents.addSpeechContext(_speechText);
       _pulse(ai: true);
       notifyListeners();
+    } else if (result case AppError<TranscriptSegment>(
+      :final error,
+    ) when error.code == 'speech_silence' || error.code == 'speech_empty') {
+      if (_speechText.isNotEmpty) {
+        _speechText = '';
+        _pulse(ai: true);
+      }
     }
     return result;
   }
@@ -1722,8 +1805,7 @@ final class AppController extends ChangeNotifier {
     final ai = _preferences.ai;
     final channel = _selected?.channel ?? '';
     if (!_unlocked ||
-        !ai.enabled ||
-        !(ai.speechContext || ai.closedCaptions) ||
+        !((ai.enabled && ai.speechContext) || ai.closedCaptions) ||
         !playback.playing ||
         channel.isEmpty)
       return;
@@ -1737,11 +1819,11 @@ final class AppController extends ChangeNotifier {
       requiresVault: true,
       pauseDuringPlayback: false,
       cadence: (PulseSignals signals) {
-        // Moonshine consumes fixed five-second windows. Queue the next window
-        // at the same cadence so caption mode does not intentionally leave a
-        // three-second hole between chunks. Single-flight scheduling and the
-        // speech.busy guard prevent overlapping recognizer calls.
-        if (ai.closedCaptions) return AppConfig.moonshineWindow;
+        // Recurring cadence starts after capture and inference finish. Waiting
+        // another five seconds here dropped whole phrases between windows.
+        // Keep only a short recovery interval; single-flight scheduling and
+        // the speech.busy guard still prevent overlapping recognizer calls.
+        if (ai.closedCaptions) return const Duration(seconds: 1);
         final minutes = signals.chatMessagesPerMinute >= 25
             ? 6
             : signals.chatMessagesPerMinute >= 5
@@ -1947,6 +2029,8 @@ final class AppController extends ChangeNotifier {
     aiRevision.dispose();
     preferencesRevision.dispose();
     xRevision.dispose();
+    discoveryRevision.dispose();
+    thumbnailRevision.dispose();
     schedulerTelemetry.dispose();
     super.dispose();
   }
