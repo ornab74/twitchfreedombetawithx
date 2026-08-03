@@ -50,7 +50,8 @@ try {
                   Target="[INSTALLFOLDER]twitch_freedom_ultra.exe"
                   WorkingDirectory="INSTALLFOLDER" />
         <RemoveFolder Id="CleanApplicationProgramsFolder" On="uninstall" />
-        <RegistryValue Root="HKLM" Key="Software\ornab74\TwitchFreedom"
+        <!-- ICE38/ICE43 require a per-user key path for this profile shortcut. -->
+        <RegistryValue Root="HKCU" Key="Software\ornab74\TwitchFreedom"
                        Name="Installed" Type="integer" Value="1" KeyPath="yes" />
       </Component>
     </DirectoryRef>
