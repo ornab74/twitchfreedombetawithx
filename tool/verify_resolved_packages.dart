@@ -40,7 +40,6 @@ const Map<String, String> expected = <String, String>{
   'jni': '1.0.2',
   'jni_flutter': '1.0.2',
   'jni_util': '1.0.0',
-  'json_annotation': '4.12.0',
   'large_file_handler': '0.5.0',
   'leak_tracker': '11.0.2',
   'leak_tracker_flutter_testing': '3.0.10',
@@ -80,11 +79,6 @@ const Map<String, String> expected = <String, String>{
   'pub_semver': '2.2.0',
   'record_use': '0.6.0',
   'safe_local_storage': '2.0.6',
-  'screen_retriever': '0.2.2',
-  'screen_retriever_linux': '0.2.2',
-  'screen_retriever_macos': '0.2.2',
-  'screen_retriever_platform_interface': '0.2.2',
-  'screen_retriever_windows': '0.2.2',
   'shared_preferences': '2.5.5',
   'shared_preferences_android': '2.4.27',
   'shared_preferences_foundation': '2.5.6',
@@ -125,7 +119,6 @@ const Map<String, String> expected = <String, String>{
   'web': '1.1.1',
   'webdriver': '3.1.0',
   'win32': '6.3.0',
-  'window_manager': '0.5.2',
   'xdg_directories': '1.1.0',
   'xml': '6.6.1',
   'yaml': '3.1.3',
@@ -158,7 +151,9 @@ void main(List<String> arguments) {
   for (final entry in expected.entries) {
     final actual = resolved[entry.key];
     if (actual == null) {
-      mismatches.add('${entry.key}: expected ${entry.value}, package not present');
+      mismatches.add(
+        '${entry.key}: expected ${entry.value}, package not present',
+      );
     } else if (actual != entry.value) {
       mismatches.add('${entry.key}: expected ${entry.value}, resolved $actual');
     }
@@ -166,7 +161,9 @@ void main(List<String> arguments) {
 
   stdout.writeln('Resolved packages inspected: ${resolved.length}');
   if (mismatches.isEmpty) {
-    stdout.writeln('The supplied July 2026 package baseline matches all present packages.');
+    stdout.writeln(
+      'The supplied July 2026 package baseline matches all present packages.',
+    );
   } else {
     stdout.writeln('Resolution differences (${mismatches.length}):');
     for (final mismatch in mismatches) {

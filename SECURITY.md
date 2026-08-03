@@ -11,11 +11,38 @@ Twitch Freedom protects saved streams, Twitch and X credentials, OAuth tokens, c
 - VUK: random 256-bit vault-unlock key, wrapped by the KEK.
 - DEKs: versioned random 256-bit record keys wrapped by the VUK.
 - Records: AES-256-GCM with a fresh 96-bit nonce.
-- Associated data: record type hash, obscured ID, key version, and schema version.
+- Associated data: logical record type, obscured record ID, and key version.
 - Logical IDs: HMAC-SHA-256-derived identifiers.
 - Password change: rewraps the VUK.
-- DEK rotation: inserts a new wrapped DEK, migrates every record, changes the active version, and retires unreferenced prior keys within one SQLite transaction.
+- DEK rotation: inserts a new wrapped DEK, migrates every record, changes the active version, and deletes unreferenced wrapped prior keys within one SQLite transaction. The WAL is then truncated so rotation provides cryptographic erasure of old record keys.
 - Remember-on-device: stores only the VUK in OS secure storage and fails closed when authentication fails.
+
+### Windows key storage
+
+- The pinned Windows secure-storage backend uses `CryptProtectData` and
+  `CryptUnprotectData` without `CRYPTPROTECT_LOCAL_MACHINE`, binding remembered
+  unlock to the current Windows user rather than every user of the machine.
+- Legacy Credential Manager compatibility is explicitly disabled. The
+  encrypted DPAPI blob lives under the application-support directory and the
+  vault database independently retains its Argon2id/wrapped-key/AES-GCM
+  hierarchy.
+- Remembered unlock is opt-in. Disabling it deletes the DPAPI-protected VUK
+  before a password-change commit, so an OS-storage failure cannot silently
+  retain unwanted auto-unlock.
+- Lock and shutdown wipe reachable application-owned VUK, KEK, DEK, verifier,
+  and decrypted-record byte buffers. Dart strings and copies made inside native
+  or runtime libraries cannot be guaranteed to be physically overwritten.
+
+### Windows release provenance
+
+- Pull-request and branch packages are unsigned technical artifacts.
+- A `v*` Windows tag requires protected PFX and password secrets, imports the
+  certificate only into the ephemeral runner's current-user store, signs and
+  verifies shipped PE files and the MSI, removes the temporary certificate,
+  and hashes the final signed artifacts.
+- Release signing fails closed for missing, expired, non-code-signing, or
+  unverifiable certificates. Dependency resolution also enforces the committed
+  lockfile and the repository's exact package-version baseline.
 
 ## Network boundaries
 
@@ -68,6 +95,8 @@ Twitch Freedom protects saved streams, Twitch and X credentials, OAuth tokens, c
 ## Out of scope
 
 - A compromised operating system or process with access to unlocked memory.
+- Another process already executing as the same Windows user; user-scoped
+  DPAPI is an account boundary, not application-process isolation.
 - Screen capture, keylogging, or malicious accessibility services.
 - Traffic analysis and filesystem metadata such as ciphertext size and timestamps.
 - Twitch account compromise.

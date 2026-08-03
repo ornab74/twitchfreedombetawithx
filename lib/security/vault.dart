@@ -24,9 +24,20 @@ final class VaultStatus {
 }
 
 final class VaultRepository {
-  VaultRepository({required SecureLog log, FlutterSecureStorage? secureStorage})
-    : _log = log,
-      _secureStorage = secureStorage ?? const FlutterSecureStorage();
+  VaultRepository({
+    required SecureLog log,
+    FlutterSecureStorage? secureStorage,
+    File? databaseFile,
+  }) : this._internal(
+         log,
+         secureStorage ??
+             const FlutterSecureStorage(
+               wOptions: WindowsOptions(useBackwardCompatibility: false),
+             ),
+         databaseFile,
+       );
+
+  VaultRepository._internal(this._log, this._secureStorage, this._databaseFile);
 
   static const String _rememberedKey = 'twitchfreedom.vuk.v1';
   static const String _metaSalt = 'kek_salt';
@@ -88,6 +99,10 @@ final class VaultRepository {
     required String password,
     required bool rememberOnDevice,
   }) async {
+    Uint8List? kek;
+    Uint8List? generatedVuk;
+    Uint8List? generatedDek;
+    var adoptedKeyMaterial = false;
     try {
       if (password.length < 10) {
         return const AppError<void>(
@@ -107,20 +122,24 @@ final class VaultRepository {
       _ensureSchema();
 
       final salt = _randomBytes(16);
-      final kek = await _deriveKek(password, salt);
-      final vuk = _randomBytes(32);
-      final dek = _randomBytes(32);
+      kek = await _deriveKek(password, salt);
+      generatedVuk = _randomBytes(32);
+      generatedDek = _randomBytes(32);
       final wrappedVuk = await _encrypt(
-        vuk,
+        generatedVuk,
         kek,
         utf8.encode('twitchfreedom:vuk:v1'),
       );
       final verifier = await _encrypt(
         utf8.encode('twitchfreedom-vault-verifier-v1'),
-        vuk,
+        generatedVuk,
         utf8.encode('meta:verifier'),
       );
-      final wrappedDek = await _encrypt(dek, vuk, utf8.encode('dek:1'));
+      final wrappedDek = await _encrypt(
+        generatedDek,
+        generatedVuk,
+        utf8.encode('dek:1'),
+      );
 
       _db!.execute('BEGIN IMMEDIATE');
       try {
@@ -149,12 +168,13 @@ final class VaultRepository {
         rethrow;
       }
 
-      _vuk = vuk;
-      _deks[1] = dek;
+      _vuk = generatedVuk;
+      _deks[1] = generatedDek;
       _activeDekVersion = 1;
+      adoptedKeyMaterial = true;
       if (rememberOnDevice) {
         try {
-          await _setRememberedUnlock(vuk);
+          await _setRememberedUnlock(generatedVuk);
         } catch (error) {
           // The vault itself is already safely committed. Keep password
           // unlock working and fail closed by storing no device secret.
@@ -175,10 +195,18 @@ final class VaultRepository {
           cause: error,
         ),
       );
+    } finally {
+      _wipe(kek);
+      if (!adoptedKeyMaterial) {
+        _wipe(generatedVuk);
+        _wipe(generatedDek);
+      }
     }
   }
 
   Future<AppResult<void>> unlockWithPassword(String password) async {
+    Uint8List? kek;
+    List<int>? clearVuk;
     try {
       final file = await _resolveDatabaseFile();
       if (!file.existsSync()) {
@@ -194,13 +222,13 @@ final class VaultRepository {
         throw const FormatException('Vault metadata is incomplete.');
       }
       final salt = base64Url.decode(saltText);
-      final kek = await _deriveKek(password, salt);
-      final vuk = await _decrypt(
+      kek = await _deriveKek(password, salt);
+      clearVuk = await _decrypt(
         base64Url.decode(wrappedText),
         kek,
         utf8.encode('twitchfreedom:vuk:v1'),
       );
-      await _finishUnlock(Uint8List.fromList(vuk));
+      await _finishUnlock(Uint8List.fromList(clearVuk));
       _log.info('Vault unlocked with boot password.');
       return const AppSuccess<void>(null);
     } catch (error) {
@@ -212,6 +240,9 @@ final class VaultRepository {
           cause: error,
         ),
       );
+    } finally {
+      _wipe(kek);
+      _wipe(clearVuk);
     }
   }
 
@@ -257,49 +288,70 @@ final class VaultRepository {
   }
 
   Future<void> _finishUnlock(Uint8List vuk) async {
-    final verifierText = _getMeta(_metaVerifier);
-    if (verifierText == null) throw const FormatException('Missing verifier.');
-    final clearVerifier = await _decrypt(
-      base64Url.decode(verifierText),
-      vuk,
-      utf8.encode('meta:verifier'),
-    );
-    if (!_constantTimeEquals(
-      clearVerifier,
-      utf8.encode('twitchfreedom-vault-verifier-v1'),
-    )) {
-      throw StateError('Vault verifier mismatch.');
-    }
-
-    final active = int.tryParse(_getMeta(_metaActiveDek) ?? '') ?? 0;
-    if (active <= 0) throw const FormatException('Missing active DEK.');
-    final rows = _db!.select(
-      'SELECT version, envelope FROM wrapped_deks WHERE retired_at IS NULL ORDER BY version',
-    );
     final loaded = <int, Uint8List>{};
-    for (final row in rows) {
-      final version = row['version'] as int;
-      final envelope = row['envelope'] as Uint8List;
-      final dek = await _decrypt(envelope, vuk, utf8.encode('dek:$version'));
-      loaded[version] = Uint8List.fromList(dek);
+    List<int>? clearVerifier;
+    var adoptedKeyMaterial = false;
+    try {
+      final verifierText = _getMeta(_metaVerifier);
+      if (verifierText == null) {
+        throw const FormatException('Missing verifier.');
+      }
+      clearVerifier = await _decrypt(
+        base64Url.decode(verifierText),
+        vuk,
+        utf8.encode('meta:verifier'),
+      );
+      if (!_constantTimeEquals(
+        clearVerifier,
+        utf8.encode('twitchfreedom-vault-verifier-v1'),
+      )) {
+        throw StateError('Vault verifier mismatch.');
+      }
+
+      final active = int.tryParse(_getMeta(_metaActiveDek) ?? '') ?? 0;
+      if (active <= 0) throw const FormatException('Missing active DEK.');
+      final rows = _db!.select(
+        'SELECT version, envelope FROM wrapped_deks WHERE retired_at IS NULL ORDER BY version',
+      );
+      for (final row in rows) {
+        final version = row['version'] as int;
+        final envelope = row['envelope'] as Uint8List;
+        List<int>? clearDek;
+        try {
+          clearDek = await _decrypt(envelope, vuk, utf8.encode('dek:$version'));
+          loaded[version] = Uint8List.fromList(clearDek);
+        } finally {
+          _wipe(clearDek);
+        }
+      }
+      if (!loaded.containsKey(active)) {
+        throw const FormatException('Active DEK could not be loaded.');
+      }
+      _clearKeyMaterial();
+      _vuk = vuk;
+      _deks.addAll(loaded);
+      _activeDekVersion = active;
+      adoptedKeyMaterial = true;
+    } finally {
+      _wipe(clearVerifier);
+      if (!adoptedKeyMaterial) {
+        _wipe(vuk);
+        for (final dek in loaded.values) {
+          _wipe(dek);
+        }
+      }
     }
-    if (!loaded.containsKey(active))
-      throw const FormatException('Active DEK could not be loaded.');
-    _vuk = vuk;
-    _deks
-      ..clear()
-      ..addAll(loaded);
-    _activeDekVersion = active;
   }
 
   Future<AppResult<void>> changePassword({
     required String newPassword,
     required bool rememberOnDevice,
   }) async {
-    if (!isUnlocked)
+    if (!isUnlocked) {
       return const AppError<void>(
         AppFailure('vault_locked', 'Unlock the vault first.'),
       );
+    }
     if (newPassword.length < 10) {
       return const AppError<void>(
         AppFailure(
@@ -308,14 +360,18 @@ final class VaultRepository {
         ),
       );
     }
+    Uint8List? kek;
     try {
       final salt = _randomBytes(16);
-      final kek = await _deriveKek(newPassword, salt);
+      kek = await _deriveKek(newPassword, salt);
       final wrappedVuk = await _encrypt(
         _vuk!,
         kek,
         utf8.encode('twitchfreedom:vuk:v1'),
       );
+      // Removing remembered unlock must happen before the password commit so
+      // a failed OS-storage deletion can never leave an unwanted auto-unlock.
+      if (!rememberOnDevice) await _setRememberedUnlock(null);
       _db!.execute('BEGIN IMMEDIATE');
       try {
         _setMeta(_metaSalt, base64UrlEncode(salt));
@@ -325,7 +381,7 @@ final class VaultRepository {
         _db!.execute('ROLLBACK');
         rethrow;
       }
-      await _setRememberedUnlock(rememberOnDevice ? _vuk : null);
+      if (rememberOnDevice) await _setRememberedUnlock(_vuk);
       _log.info('Boot password changed by rewrapping the vault-unlock key.');
       return const AppSuccess<void>(null);
     } catch (error) {
@@ -336,14 +392,17 @@ final class VaultRepository {
           cause: error,
         ),
       );
+    } finally {
+      _wipe(kek);
     }
   }
 
   Future<AppResult<int>> rotateDataKey() async {
-    if (!isUnlocked)
+    if (!isUnlocked) {
       return const AppError<int>(
         AppFailure('vault_locked', 'Unlock the vault first.'),
       );
+    }
     final oldVersion = _activeDekVersion;
     final newVersion = oldVersion + 1;
     final newDek = _randomBytes(32);
@@ -353,7 +412,6 @@ final class VaultRepository {
         _vuk!,
         utf8.encode('dek:$newVersion'),
       );
-      final migrated = <int>{};
       _db!.execute('BEGIN IMMEDIATE');
       try {
         _db!.execute(
@@ -380,31 +438,35 @@ final class VaultRepository {
           }
           final recordId = row['record_id'] as String;
           final logicalType = row['logical_type'] as String;
-          final clear = await _decrypt(
-            row['envelope'] as Uint8List,
-            oldDek,
-            utf8.encode('$logicalType:$recordId:$oldKeyVersion'),
-          );
-          final nextEnvelope = await _encrypt(
-            clear,
-            newDek,
-            utf8.encode('$logicalType:$recordId:$newVersion'),
-          );
-          _db!.execute(
-            'UPDATE encrypted_records SET key_version = ?, envelope = ?, updated_at = ? WHERE record_id = ?',
-            <Object?>[
-              newVersion,
-              nextEnvelope,
-              DateTime.now().toUtc().toIso8601String(),
-              recordId,
-            ],
-          );
-          migrated.add(oldKeyVersion);
+          List<int>? clear;
+          try {
+            clear = await _decrypt(
+              row['envelope'] as Uint8List,
+              oldDek,
+              utf8.encode('$logicalType:$recordId:$oldKeyVersion'),
+            );
+            final nextEnvelope = await _encrypt(
+              clear,
+              newDek,
+              utf8.encode('$logicalType:$recordId:$newVersion'),
+            );
+            _db!.execute(
+              'UPDATE encrypted_records SET key_version = ?, envelope = ?, updated_at = ? WHERE record_id = ?',
+              <Object?>[
+                newVersion,
+                nextEnvelope,
+                DateTime.now().toUtc().toIso8601String(),
+                recordId,
+              ],
+            );
+          } finally {
+            _wipe(clear);
+          }
         }
         _db!.execute(
-          'UPDATE wrapped_deks SET retired_at = ? WHERE version < ? AND version NOT IN '
+          'DELETE FROM wrapped_deks WHERE version < ? AND version NOT IN '
           '(SELECT DISTINCT key_version FROM encrypted_records)',
-          <Object?>[DateTime.now().toUtc().toIso8601String(), newVersion],
+          <Object?>[newVersion],
         );
         _db!.execute('COMMIT');
       } catch (_) {
@@ -414,9 +476,18 @@ final class VaultRepository {
 
       _deks[newVersion] = newDek;
       _activeDekVersion = newVersion;
-      for (final version in migrated) {
+      final retiredVersions = _deks.keys
+          .where((version) => version < newVersion)
+          .toList(growable: false);
+      for (final version in retiredVersions) {
         final retired = _deks.remove(version);
-        if (retired != null) _wipe(retired);
+        _wipe(retired);
+      }
+      try {
+        _db!.execute('PRAGMA wal_checkpoint(TRUNCATE)');
+        _db!.execute('PRAGMA incremental_vacuum');
+      } catch (error) {
+        _log.warning('Rotated keys; deferred SQLite page cleanup: $error');
       }
       _log.info(
         'Transactionally rotated encrypted records to key version $newVersion.',
@@ -458,14 +529,15 @@ final class VaultRepository {
     if (!isUnlocked) throw StateError('Vault is locked.');
     final recordId = await _obscuredId(logicalType, logicalId);
     final clear = utf8.encode(jsonEncode(value));
-    final version = _activeDekVersion;
-    final envelope = await _encrypt(
-      clear,
-      _deks[version]!,
-      utf8.encode('$logicalType:$recordId:$version'),
-    );
-    _db!.execute(
-      '''
+    try {
+      final version = _activeDekVersion;
+      final envelope = await _encrypt(
+        clear,
+        _deks[version]!,
+        utf8.encode('$logicalType:$recordId:$version'),
+      );
+      _db!.execute(
+        '''
       INSERT INTO encrypted_records(record_id, logical_type, key_version, envelope, updated_at)
       VALUES(?, ?, ?, ?, ?)
       ON CONFLICT(record_id) DO UPDATE SET
@@ -474,14 +546,17 @@ final class VaultRepository {
         envelope = excluded.envelope,
         updated_at = excluded.updated_at
       ''',
-      <Object?>[
-        recordId,
-        logicalType,
-        version,
-        envelope,
-        DateTime.now().toUtc().toIso8601String(),
-      ],
-    );
+        <Object?>[
+          recordId,
+          logicalType,
+          version,
+          envelope,
+          DateTime.now().toUtc().toIso8601String(),
+        ],
+      );
+    } finally {
+      _wipe(clear);
+    }
   }
 
   Future<void> putBytes(
@@ -531,12 +606,16 @@ final class VaultRepository {
     for (final entry in values.entries) {
       final recordId = await _obscuredId(logicalType, entry.key);
       final clear = utf8.encode(jsonEncode(entry.value));
-      final envelope = await _encrypt(
-        clear,
-        _deks[version]!,
-        utf8.encode('$logicalType:$recordId:$version'),
-      );
-      prepared.add((recordId: recordId, envelope: envelope));
+      try {
+        final envelope = await _encrypt(
+          clear,
+          _deks[version]!,
+          utf8.encode('$logicalType:$recordId:$version'),
+        );
+        prepared.add((recordId: recordId, envelope: envelope));
+      } finally {
+        _wipe(clear);
+      }
     }
 
     final updatedAt = DateTime.now().toUtc().toIso8601String();
@@ -583,16 +662,22 @@ final class VaultRepository {
     final row = rows.first;
     final version = row['key_version'] as int;
     final dek = _deks[version];
-    if (dek == null)
+    if (dek == null) {
       throw StateError('Record references unavailable key version $version.');
-    final clear = await _decrypt(
-      row['envelope'] as Uint8List,
-      dek,
-      utf8.encode('$logicalType:$recordId:$version'),
-    );
-    return Map<String, Object?>.from(
-      jsonDecode(utf8.decode(clear)) as Map<Object?, Object?>,
-    );
+    }
+    List<int>? clear;
+    try {
+      clear = await _decrypt(
+        row['envelope'] as Uint8List,
+        dek,
+        utf8.encode('$logicalType:$recordId:$version'),
+      );
+      return Map<String, Object?>.from(
+        jsonDecode(utf8.decode(clear)) as Map<Object?, Object?>,
+      );
+    } finally {
+      _wipe(clear);
+    }
   }
 
   Future<Uint8List?> getBytes(String logicalType, String logicalId) async {
@@ -609,13 +694,17 @@ final class VaultRepository {
     if (dek == null) {
       throw StateError('Record references unavailable key version $version.');
     }
-    return Uint8List.fromList(
-      await _decrypt(
+    List<int>? clear;
+    try {
+      clear = await _decrypt(
         row['envelope'] as Uint8List,
         dek,
         utf8.encode('$logicalType:$recordId:$version'),
-      ),
-    );
+      );
+      return Uint8List.fromList(clear);
+    } finally {
+      _wipe(clear);
+    }
   }
 
   Future<List<Map<String, Object?>>> getAllJson(String logicalType) async {
@@ -630,8 +719,9 @@ final class VaultRepository {
       final dek = _deks[version];
       if (dek == null) continue;
       final recordId = row['record_id'] as String;
+      List<int>? clear;
       try {
-        final clear = await _decrypt(
+        clear = await _decrypt(
           row['envelope'] as Uint8List,
           dek,
           utf8.encode('$logicalType:$recordId:$version'),
@@ -643,6 +733,8 @@ final class VaultRepository {
         );
       } catch (error) {
         _log.warning('Skipped one unauthenticated $logicalType record: $error');
+      } finally {
+        _wipe(clear);
       }
     }
     return result;
@@ -673,15 +765,13 @@ final class VaultRepository {
   }
 
   Future<void> close() async {
-    _db?.close();
+    final database = _db;
     _db = null;
-    if (_vuk != null) _wipe(_vuk!);
-    for (final dek in _deks.values) {
-      _wipe(dek);
+    try {
+      database?.close();
+    } finally {
+      _clearKeyMaterial();
     }
-    _vuk = null;
-    _deks.clear();
-    _activeDekVersion = 0;
   }
 
   Future<void> destroyVault() async {
@@ -694,13 +784,24 @@ final class VaultRepository {
       );
     }
     final file = await _resolveDatabaseFile();
-    if (file.existsSync()) {
-      file.deleteSync();
+    for (final path in <String>[
+      file.path,
+      '${file.path}-wal',
+      '${file.path}-shm',
+    ]) {
+      final candidate = File(path);
+      if (candidate.existsSync()) candidate.deleteSync();
     }
   }
 
   void _open(File file) {
-    _db?.close();
+    final previous = _db;
+    _db = null;
+    try {
+      previous?.close();
+    } finally {
+      _clearKeyMaterial();
+    }
     _db = sqlite3.open(file.path);
     _db!.execute('PRAGMA journal_mode = WAL');
     _db!.execute('PRAGMA synchronous = FULL');
@@ -763,7 +864,12 @@ final class VaultRepository {
       password: password,
       nonce: salt,
     );
-    return Uint8List.fromList(await key.extractBytes());
+    final extracted = await key.extractBytes();
+    try {
+      return Uint8List.fromList(extracted);
+    } finally {
+      key.destroy();
+    }
   }
 
   Future<Uint8List> _encrypt(
@@ -801,9 +907,13 @@ final class VaultRepository {
     return base64UrlEncode(mac.bytes).replaceAll('=', '');
   }
 
-  Uint8List _randomBytes(int count) => Uint8List.fromList(
-    List<int>.generate(count, (_) => _random.nextInt(256)),
-  );
+  Uint8List _randomBytes(int count) {
+    final bytes = Uint8List(count);
+    for (var index = 0; index < count; index++) {
+      bytes[index] = _random.nextInt(256);
+    }
+    return bytes;
+  }
 
   bool _constantTimeEquals(List<int> left, List<int> right) {
     if (left.length != right.length) return false;
@@ -814,7 +924,18 @@ final class VaultRepository {
     return difference == 0;
   }
 
-  void _wipe(Uint8List bytes) {
+  void _clearKeyMaterial() {
+    _wipe(_vuk);
+    for (final dek in _deks.values) {
+      _wipe(dek);
+    }
+    _vuk = null;
+    _deks.clear();
+    _activeDekVersion = 0;
+  }
+
+  void _wipe(List<int>? bytes) {
+    if (bytes == null) return;
     for (var index = 0; index < bytes.length; index++) {
       bytes[index] = 0;
     }

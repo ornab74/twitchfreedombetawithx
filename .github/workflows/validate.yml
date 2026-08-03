@@ -48,8 +48,8 @@ jobs:
 
       - name: Resolve dependencies and compare requested baseline
         run: |
-          flutter pub get
-          dart run tool/verify_resolved_packages.dart
+          flutter pub get --enforce-lockfile
+          dart run tool/verify_resolved_packages.dart --strict
 
       - name: Verify Linux software-rendering policy
         run: ./tool/verify_linux_ready.sh

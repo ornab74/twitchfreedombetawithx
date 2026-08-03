@@ -96,10 +96,15 @@ portable archives:
 - macOS: `TwitchFreedom-macOS.dmg` and `.zip`
 
 Download the artifact for your operating system from the workflow run. Verify
-it with the accompanying `.sha256` file before opening it. These automated
-technical builds are currently unsigned, so Windows SmartScreen or macOS
-Gatekeeper may require an explicit local approval. Production releases still
-need protected code signing and Apple notarization.
+it with the accompanying `.sha256` file before opening it. Pull-request and
+branch artifacts are unsigned technical builds, so Windows SmartScreen or
+macOS Gatekeeper may require an explicit local approval. A Windows `v*` tag
+build is release-only: CI requires the protected
+`WINDOWS_SIGNING_PFX_BASE64` and `WINDOWS_SIGNING_PFX_PASSWORD` secrets, signs
+and verifies every shipped EXE/DLL and the MSI with SHA-256 Authenticode, then
+computes the published hashes. The tag build fails closed when signing
+material is unavailable or invalid. Apple notarization and mobile signing
+still require their protected release process.
 
 The Debian installer places the application under `/opt/twitch-freedom` and
 adds `/usr/bin/twitch-freedom` plus a desktop-menu entry. The MSI installs for
@@ -113,7 +118,7 @@ Install Flutter first, then install the Linux build packages:
 ```bash
 ./scripts/install-linux-build-deps.sh
 flutter config --enable-linux-desktop
-flutter pub get
+flutter pub get --enforce-lockfile
 ```
 
 For normal use, run a release build:
@@ -149,6 +154,11 @@ automatically gets the accelerated path.
 
 The Linux keyring is only used for the optional “remember this device” feature.
 If Crostini reports `KeyringLocked`, password unlock still works normally.
+On Windows, remembered unlock uses current-user DPAPI through the pinned
+`flutter_secure_storage_windows` implementation. Machine-wide DPAPI and its
+legacy Credential Manager compatibility path are disabled. This protects the
+remembered VUK at the Windows-account boundary; leave **Remember this device**
+off when password entry on every launch is preferred.
 
 ## Configure Twitch
 

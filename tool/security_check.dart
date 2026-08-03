@@ -6,6 +6,8 @@ final forbidden = <RegExp>[
   RegExp(r'WebView'),
   RegExp(r'''clientSecret\s*=\s*["'][^"']+["']'''),
   RegExp(r'''accessToken\s*=\s*["'][^"']+["']'''),
+  RegExp(r'WindowsOptions\s*\(\s*useBackwardCompatibility\s*:\s*true'),
+  RegExp(r'''package:shared_preferences/'''),
 ];
 
 void main() {
@@ -16,15 +18,23 @@ void main() {
     return;
   }
   final violations = <String>[];
-  for (final entity in root.listSync(recursive: true).whereType<File>().where((File file) => file.path.endsWith('.dart'))) {
+  for (final entity
+      in root
+          .listSync(recursive: true)
+          .whereType<File>()
+          .where((File file) => file.path.endsWith('.dart'))) {
     final source = entity.readAsStringSync();
     for (final rule in forbidden) {
-      if (rule.hasMatch(source)) violations.add('${entity.path}: matched ${rule.pattern}');
+      if (rule.hasMatch(source)) {
+        violations.add('${entity.path}: matched ${rule.pattern}');
+      }
     }
   }
   if (violations.isNotEmpty) {
     stderr.writeln('Security source check failed:');
-    for (final value in violations) stderr.writeln(' - $value');
+    for (final value in violations) {
+      stderr.writeln(' - $value');
+    }
     exitCode = 1;
     return;
   }

@@ -1,10 +1,39 @@
 param(
   [Parameter(Mandatory = $true)][string]$SourceDir,
   [Parameter(Mandatory = $true)][string]$Output,
-  [Parameter(Mandatory = $true)][string]$Version
+  [Parameter(Mandatory = $true)][string]$Version,
+  [string]$SigningCertificateThumbprint = ''
 )
 
 $ErrorActionPreference = 'Stop'
+
+function Resolve-SignTool {
+  $kitsRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
+  if (Test-Path $kitsRoot) {
+    $candidate = Get-ChildItem -Path $kitsRoot -Filter signtool.exe -File -Recurse |
+      Where-Object { $_.DirectoryName -match '\\x64$' } |
+      Sort-Object FullName -Descending |
+      Select-Object -First 1
+    if ($candidate) { return $candidate.FullName }
+  }
+  $command = Get-Command signtool.exe -ErrorAction SilentlyContinue
+  if ($command) { return $command.Source }
+  throw 'SignTool was not found in the Windows SDK.'
+}
+
+function Invoke-AuthenticodeSign {
+  param(
+    [Parameter(Mandatory = $true)][string]$SignTool,
+    [Parameter(Mandatory = $true)][string]$Thumbprint,
+    [Parameter(Mandatory = $true)][string]$Path
+  )
+  & $SignTool sign /nologo /sha1 $Thumbprint /fd SHA256 `
+    /tr https://timestamp.digicert.com /td SHA256 $Path
+  if ($LASTEXITCODE -ne 0) { throw "Authenticode signing failed for $Path" }
+  & $SignTool verify /nologo /pa /all $Path
+  if ($LASTEXITCODE -ne 0) { throw "Authenticode verification failed for $Path" }
+}
+
 if (-not (Test-Path (Join-Path $SourceDir 'twitch_freedom_ultra.exe'))) {
   throw "Release executable missing from $SourceDir"
 }
@@ -22,6 +51,32 @@ try {
   $harvest = Join-Path $work 'harvest.wxs'
   $product = Join-Path $work 'product.wxs'
   $source = (Resolve-Path $SourceDir).Path
+  $signTool = $null
+  $thumbprint = $SigningCertificateThumbprint.Replace(' ', '').ToUpperInvariant()
+  if ($thumbprint) {
+    if ($thumbprint -notmatch '^[0-9A-F]{40}$') {
+      throw 'The signing certificate thumbprint must be a 40-character SHA-1 identifier.'
+    }
+    $certificate = Get-Item "Cert:\CurrentUser\My\$thumbprint" -ErrorAction Stop
+    if (-not $certificate.HasPrivateKey) {
+      throw 'The Windows signing certificate has no private key.'
+    }
+    $now = Get-Date
+    if ($now -lt $certificate.NotBefore -or $now -ge $certificate.NotAfter) {
+      throw 'The Windows signing certificate is not currently valid.'
+    }
+    $codeSigningOid = '1.3.6.1.5.5.7.3.3'
+    if (-not ($certificate.EnhancedKeyUsageList | Where-Object { $_.ObjectId.Value -eq $codeSigningOid })) {
+      throw 'The certificate is not authorized for code signing.'
+    }
+    $signTool = Resolve-SignTool
+    Get-ChildItem -LiteralPath $source -File -Recurse |
+      Where-Object { $_.Extension -in @('.exe', '.dll') } |
+      Sort-Object FullName |
+      ForEach-Object {
+        Invoke-AuthenticodeSign -SignTool $signTool -Thumbprint $thumbprint -Path $_.FullName
+      }
+  }
 
   & $heat.Source dir $source -nologo -gg -sfrag -srd -sreg `
     -dr INSTALLFOLDER -cg AppFiles -var var.SourceDir -out $harvest
@@ -69,6 +124,9 @@ try {
   & $light.Source -nologo -spdb -out $Output `
     (Join-Path $work 'product.wixobj') (Join-Path $work 'harvest.wixobj')
   if ($LASTEXITCODE -ne 0) { throw 'WiX light failed.' }
+  if ($signTool) {
+    Invoke-AuthenticodeSign -SignTool $signTool -Thumbprint $thumbprint -Path $Output
+  }
 } finally {
   Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 }

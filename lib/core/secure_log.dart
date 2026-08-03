@@ -20,9 +20,24 @@ final class SecureLog {
   static final List<RegExp> _secretPatterns = <RegExp>[
     RegExp(r'(oauth:)[A-Za-z0-9._~+/=-]+', caseSensitive: false),
     RegExp(r'(bearer\s+)[A-Za-z0-9._~+/=-]+', caseSensitive: false),
-    RegExp(r'''(client_secret["\s:=]+)[^\s,&;"']+''', caseSensitive: false),
-    RegExp(r'''(access_token["\s:=]+)[^\s,&;"']+''', caseSensitive: false),
-    RegExp(r'''(refresh_token["\s:=]+)[^\s,&;"']+''', caseSensitive: false),
+    RegExp(r'(basic\s+)[A-Za-z0-9+/=]+', caseSensitive: false),
+    RegExp(
+      r'''(client[_-]?secret["'\s:=]+)[^\s,&;"']+''',
+      caseSensitive: false,
+    ),
+    RegExp(r'''(access[_-]?token["'\s:=]+)[^\s,&;"']+''', caseSensitive: false),
+    RegExp(
+      r'''(refresh[_-]?token["'\s:=]+)[^\s,&;"']+''',
+      caseSensitive: false,
+    ),
+    RegExp(
+      r'''((?:device|user)[_-]?code["'\s:=]+)[^\s,&;"']+''',
+      caseSensitive: false,
+    ),
+    RegExp(
+      r'''(code[_-]?verifier["'\s:=]+)[^\s,&;"']+''',
+      caseSensitive: false,
+    ),
     RegExp(r'(sig=)[^&\s]+', caseSensitive: false),
     RegExp(r'(token=)[^&\s]+', caseSensitive: false),
   ];
@@ -42,7 +57,7 @@ final class SecureLog {
     for (final pattern in _secretPatterns) {
       message = message.replaceAllMapped(pattern, (Match match) {
         final prefix = match.groupCount >= 1 ? (match.group(1) ?? '') : '';
-        return '${prefix}[REDACTED]';
+        return '$prefix[REDACTED]';
       });
     }
     if (message.length > 1800) {

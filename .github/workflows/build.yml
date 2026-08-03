@@ -65,8 +65,8 @@ jobs:
 
       - name: Resolve packages
         run: |
-          flutter pub get
-          dart run tool/verify_resolved_packages.dart
+          flutter pub get --enforce-lockfile
+          dart run tool/verify_resolved_packages.dart --strict
 
       - name: Build pinned ML-KEM-768 provider
         if: runner.os == 'Linux'
@@ -114,7 +114,7 @@ jobs:
           echo "$LIBOQS_SHA256  build/linux/x64/release/bundle/lib/liboqs.so" | sha256sum --check --strict
           cmp native/linux/liboqs.so build/linux/x64/release/bundle/lib/liboqs.so
 
-      - name: Package Windows
+      - name: Install Windows packaging tools
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -122,7 +122,12 @@ jobs:
           $wixRoot = Join-Path ${env:ProgramFiles(x86)} 'WiX Toolset v3.*\bin'
           $wixBin = (Get-Item $wixRoot | Sort-Object FullName -Descending | Select-Object -First 1).FullName
           if (-not $wixBin) { throw 'WiX Toolset installation was not found.' }
-          $env:PATH = "$wixBin;$env:PATH"
+          Add-Content -Path $env:GITHUB_PATH -Value $wixBin
+
+      - name: Package unsigned Windows technical artifacts
+        if: runner.os == 'Windows' && !startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
           ./tool/package_windows_msi.ps1 -SourceDir build/windows/x64/runner/Release -Output ${{ matrix.artifact }}.msi -Version $env:APP_VERSION
           Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath ${{ matrix.artifact }}.zip
           if (-not (Test-Path '${{ matrix.artifact }}.msi') -or -not (Test-Path '${{ matrix.artifact }}.zip')) {
@@ -131,6 +136,60 @@ jobs:
           @('${{ matrix.artifact }}.msi', '${{ matrix.artifact }}.zip') | ForEach-Object {
             (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower() + "  $_"
           } | Out-File -Encoding ascii ${{ matrix.artifact }}.sha256
+
+      - name: Package and sign Windows release artifacts
+        if: runner.os == 'Windows' && startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_PFX_BASE64: ${{ secrets.WINDOWS_SIGNING_PFX_BASE64 }}
+          WINDOWS_SIGNING_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PFX_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_PFX_BASE64) -or
+              [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_PFX_PASSWORD)) {
+            throw 'Signed Windows releases require WINDOWS_SIGNING_PFX_BASE64 and WINDOWS_SIGNING_PFX_PASSWORD.'
+          }
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'twitch-freedom-release-signing.pfx'
+          $certificate = $null
+          $securePassword = $null
+          try {
+            try {
+              $pfxBytes = [Convert]::FromBase64String($env:WINDOWS_SIGNING_PFX_BASE64)
+            } catch {
+              throw 'WINDOWS_SIGNING_PFX_BASE64 is not valid base64.'
+            }
+            [IO.File]::WriteAllBytes($pfxPath, $pfxBytes)
+            [Array]::Clear($pfxBytes, 0, $pfxBytes.Length)
+            $securePassword = ConvertTo-SecureString $env:WINDOWS_SIGNING_PFX_PASSWORD -AsPlainText -Force
+            $certificate = Import-PfxCertificate -FilePath $pfxPath `
+              -CertStoreLocation Cert:\CurrentUser\My -Password $securePassword -Exportable:$false
+            if (-not $certificate -or -not $certificate.HasPrivateKey) {
+              throw 'The imported Windows signing certificate has no private key.'
+            }
+            $env:WINDOWS_SIGNING_PFX_BASE64 = ''
+            $env:WINDOWS_SIGNING_PFX_PASSWORD = ''
+            ./tool/package_windows_msi.ps1 `
+              -SourceDir build/windows/x64/runner/Release `
+              -Output ${{ matrix.artifact }}.msi `
+              -Version $env:APP_VERSION `
+              -SigningCertificateThumbprint $certificate.Thumbprint
+            Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath ${{ matrix.artifact }}.zip
+            if (-not (Test-Path '${{ matrix.artifact }}.msi') -or -not (Test-Path '${{ matrix.artifact }}.zip')) {
+              throw 'Expected signed Windows MSI and ZIP artifacts were not created.'
+            }
+            @('${{ matrix.artifact }}.msi', '${{ matrix.artifact }}.zip') | ForEach-Object {
+              (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower() + "  $_"
+            } | Out-File -Encoding ascii ${{ matrix.artifact }}.sha256
+          } finally {
+            if ($securePassword) {
+              $securePassword.Dispose()
+            }
+            if ($certificate) {
+              Remove-Item "Cert:\CurrentUser\My\$($certificate.Thumbprint)" -Force -ErrorAction SilentlyContinue
+            }
+            if (Test-Path $pfxPath) {
+              Remove-Item $pfxPath -Force -ErrorAction SilentlyContinue
+            }
+          }
 
       - name: Package macOS
         if: runner.os == 'macOS'
@@ -196,8 +255,8 @@ jobs:
         run: flutter config --no-enable-swift-package-manager
       - run: flutter create --platforms=android --org com.ornab74 .
       - run: dart run tool/configure_generated_platforms.dart
-      - run: flutter pub get
-      - run: dart run tool/verify_resolved_packages.dart
+      - run: flutter pub get --enforce-lockfile
+      - run: dart run tool/verify_resolved_packages.dart --strict
       - run: flutter analyze --no-fatal-infos
       - run: flutter test
       - name: Build arm64 APK
@@ -234,8 +293,8 @@ jobs:
         run: flutter config --no-enable-swift-package-manager
       - run: flutter create --platforms=ios --org com.ornab74 .
       - run: dart run tool/configure_generated_platforms.dart
-      - run: flutter pub get
-      - run: dart run tool/verify_resolved_packages.dart
+      - run: flutter pub get --enforce-lockfile
+      - run: dart run tool/verify_resolved_packages.dart --strict
       - run: flutter analyze --no-fatal-infos
       - run: flutter test
       - name: Build unsigned iOS application
@@ -259,5 +318,9 @@ jobs:
     needs: [desktop, android, ios]
     steps:
       - run: |
-          echo "Unsigned technical artifacts built."
-          echo "Code signing, macOS notarization, Windows signing, Android signing, SBOM review, and FFmpeg licensing review must occur in a separately protected release workflow."
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "The Windows tag artifact was Authenticode signed and verified."
+          else
+            echo "Unsigned technical artifacts built; they are not release artifacts."
+          fi
+          echo "macOS notarization, Android/iOS signing, SBOM review, and FFmpeg licensing review remain protected-release requirements."

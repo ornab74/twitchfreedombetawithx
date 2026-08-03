@@ -42,7 +42,7 @@ if [[ "${1:-}" == '--full' ]]; then
   command -v flutter >/dev/null || fail 'flutter is not on PATH'
   flutter config --enable-linux-desktop
   dart run tool/configure_generated_platforms.dart
-  flutter pub get
+  flutter pub get --enforce-lockfile
   flutter analyze
   flutter test
   pass 'Flutter dependency, analyzer, and test validation completed'

@@ -14,4 +14,26 @@ void main() {
     expect(text, isNot(contains('playlist')));
     expect(text, contains('[REDACTED]'));
   });
+
+  test('redacts Windows-vault and OAuth JSON naming variants', () {
+    final log = SecureLog();
+    log.warning(
+      'Basic Y2xpZW50OnNlY3JldA== '
+      '{"clientSecret":"client-value","accessToken":"access-value",'
+      '"refresh_token":"refresh-value","device_code":"device-value",'
+      '"codeVerifier":"verifier-value"}',
+    );
+    final text = log.entries.single.message;
+    for (final secret in <String>[
+      'Y2xpZW50OnNlY3JldA==',
+      'client-value',
+      'access-value',
+      'refresh-value',
+      'device-value',
+      'verifier-value',
+    ]) {
+      expect(text, isNot(contains(secret)));
+    }
+    expect('[REDACTED]'.allMatches(text), hasLength(6));
+  });
 }
