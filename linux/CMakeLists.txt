@@ -55,6 +55,14 @@ install(TARGETS ${BINARY_NAME} RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}" COM
 install(FILES "${FLUTTER_ICU_DATA_FILE}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}" COMPONENT Runtime)
 install(FILES "${FLUTTER_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}" COMPONENT Runtime)
 
+# A pinned, minimal ML-KEM-768 liboqs build can be produced with
+# tool/bootstrap_liboqs_linux.sh. Never silently fall back to non-PQ crypto:
+# the Dart hybrid layer fails closed when this library is absent or incompatible.
+set(TWITCH_FREEDOM_LIBOQS "${CMAKE_SOURCE_DIR}/../native/linux/liboqs.so")
+if(EXISTS "${TWITCH_FREEDOM_LIBOQS}" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+  install(FILES "${TWITCH_FREEDOM_LIBOQS}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}" COMPONENT Runtime)
+endif()
+
 foreach(bundled_library ${PLUGIN_BUNDLED_LIBRARIES})
   install(FILES "${bundled_library}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}" COMPONENT Runtime)
 endforeach(bundled_library)

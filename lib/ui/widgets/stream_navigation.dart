@@ -197,7 +197,7 @@ final class _StreamDrawer extends StatelessWidget {
                           stream: stream,
                           selected: controller.selected?.id == stream.id,
                           showTitle: controller.preferences.showStreamTitles,
-                          onTap: () => controller.selectStream(stream),
+                          onTap: () => controller.selectAndPlayStream(stream),
                           onPlay: () async {
                             await controller.selectStream(stream);
                             await controller.startPlayback();

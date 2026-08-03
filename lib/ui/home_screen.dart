@@ -24,8 +24,13 @@ final class HomeScreen extends StatefulWidget {
 
 final class _HomeScreenState extends State<HomeScreen> {
   late bool _drawerOpen;
-  late ({bool compactDensity, bool reduceMotion, bool drawerOpen}) _layout;
-  late Listenable _topUpdates;
+  late ({
+    bool compactDensity,
+    bool reduceMotion,
+    bool drawerOpen,
+    bool aiEnabled,
+  })
+  _layout;
   int _mobileTab = 0;
   bool _xMode = false;
 
@@ -34,17 +39,15 @@ final class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     _drawerOpen = widget.controller.preferences.drawerOpen;
     _layout = _readLayout();
-    _topUpdates = Listenable.merge(<Listenable>[
-      widget.controller.shellRevision,
-      widget.controller.aiRevision,
-    ]);
     widget.controller.preferencesRevision.addListener(_handlePreferences);
   }
 
-  ({bool compactDensity, bool reduceMotion, bool drawerOpen}) _readLayout() => (
+  ({bool compactDensity, bool reduceMotion, bool drawerOpen, bool aiEnabled})
+  _readLayout() => (
     compactDensity: widget.controller.preferences.compactDensity,
     reduceMotion: widget.controller.preferences.reduceMotion,
     drawerOpen: widget.controller.preferences.drawerOpen,
+    aiEnabled: widget.controller.preferences.ai.enabled,
   );
 
   void _handlePreferences() {
@@ -62,10 +65,6 @@ final class _HomeScreenState extends State<HomeScreen> {
     if (oldWidget.controller == widget.controller) return;
     oldWidget.controller.preferencesRevision.removeListener(_handlePreferences);
     widget.controller.preferencesRevision.addListener(_handlePreferences);
-    _topUpdates = Listenable.merge(<Listenable>[
-      widget.controller.shellRevision,
-      widget.controller.aiRevision,
-    ]);
     _layout = _readLayout();
     _drawerOpen = _layout.drawerOpen;
   }
@@ -164,17 +163,6 @@ final class _HomeScreenState extends State<HomeScreen> {
                   if (_xMode)
                     Expanded(child: XModeScreen(controller: controller))
                   else ...<Widget>[
-                    ListenableBuilder(
-                      listenable: _topUpdates,
-                      builder: (_, __) => _TopStatusBar(
-                        controller: controller,
-                        onSettings: () =>
-                            showSettingsSheet(context, controller),
-                      ),
-                    ),
-                    SizedBox(
-                      height: controller.preferences.compactDensity ? 10 : 14,
-                    ),
                     Expanded(
                       child: Row(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -184,20 +172,24 @@ final class _HomeScreenState extends State<HomeScreen> {
                             child: Column(
                               children: <Widget>[
                                 Expanded(
-                                  flex: 7,
+                                  flex: controller.preferences.ai.enabled
+                                      ? 7
+                                      : 1,
                                   child: RepaintBoundary(
                                     child: PlayerPanel(controller: controller),
                                   ),
                                 ),
-                                const SizedBox(height: 14),
-                                Expanded(
-                                  flex: 3,
-                                  child: RepaintBoundary(
-                                    child: AiCompanionPanel(
-                                      controller: controller,
+                                if (controller.preferences.ai.enabled) ...[
+                                  const SizedBox(height: 14),
+                                  Expanded(
+                                    flex: 3,
+                                    child: RepaintBoundary(
+                                      child: AiCompanionPanel(
+                                        controller: controller,
+                                      ),
                                     ),
                                   ),
-                                ),
+                                ],
                               ],
                             ),
                           ),
@@ -211,8 +203,6 @@ final class _HomeScreenState extends State<HomeScreen> {
                         ],
                       ),
                     ),
-                    const SizedBox(height: 8),
-                    _Footer(controller: controller),
                   ],
                 ],
               ),
@@ -225,10 +215,13 @@ final class _HomeScreenState extends State<HomeScreen> {
 
   Widget _buildCompact(BuildContext context) {
     final controller = widget.controller;
+    final aiEnabled = controller.preferences.ai.enabled;
+    final pages = aiEnabled ? const <int>[0, 1, 2, 3] : const <int>[0, 1, 3];
+    final selectedPage = pages.contains(_mobileTab) ? _mobileTab : 0;
     // IndexedStack lays out every hidden child on each constraint change.
     // Mount only the selected heavyweight surface so video frames do not also
     // trigger hidden chat and AI layout work on compact windows.
-    final page = switch (_mobileTab) {
+    final page = switch (selectedPage) {
       0 => PlayerPanel(controller: controller),
       1 => ChatPanel(controller: controller),
       2 => AiCompanionPanel(controller: controller),
@@ -280,23 +273,24 @@ final class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
           NavigationBar(
-            selectedIndex: _mobileTab,
+            selectedIndex: pages.indexOf(selectedPage),
             onDestinationSelected: (int value) =>
-                setState(() => _mobileTab = value),
-            destinations: const <NavigationDestination>[
-              NavigationDestination(
+                setState(() => _mobileTab = pages[value]),
+            destinations: <NavigationDestination>[
+              const NavigationDestination(
                 icon: Icon(Icons.live_tv_rounded),
                 label: 'Player',
               ),
-              NavigationDestination(
+              const NavigationDestination(
                 icon: Icon(Icons.forum_rounded),
                 label: 'Chat',
               ),
-              NavigationDestination(
-                icon: Icon(Icons.auto_awesome_rounded),
-                label: 'AI',
-              ),
-              NavigationDestination(
+              if (aiEnabled)
+                const NavigationDestination(
+                  icon: Icon(Icons.auto_awesome_rounded),
+                  label: 'AI',
+                ),
+              const NavigationDestination(
                 icon: Icon(Icons.alternate_email_rounded),
                 label: 'X',
               ),
@@ -379,7 +373,7 @@ final class _HomeScreenState extends State<HomeScreen> {
                                   },
                                 ),
                                 onTap: () async {
-                                  await controller.selectStream(stream);
+                                  await controller.selectAndPlayStream(stream);
                                   if (context.mounted) Navigator.pop(context);
                                 },
                               ),
@@ -427,108 +421,6 @@ final class _TinyWindowSurface extends StatelessWidget {
         ),
       ),
     ),
-  );
-}
-
-final class _TopStatusBar extends StatelessWidget {
-  const _TopStatusBar({required this.controller, required this.onSettings});
-  final AppController controller;
-  final VoidCallback onSettings;
-
-  @override
-  Widget build(BuildContext context) {
-    final tokens = freedomTokens(context);
-    return GlassPanel(
-      radius: 20,
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      child: Row(
-        children: <Widget>[
-          Icon(Icons.shield_rounded, size: 18, color: tokens.good),
-          const SizedBox(width: 8),
-          Text(
-            'Secure',
-            style: TextStyle(color: tokens.good, fontWeight: FontWeight.w800),
-          ),
-          const SizedBox(width: 16),
-          Container(width: 1, height: 22, color: tokens.border),
-          const SizedBox(width: 16),
-          Expanded(
-            child: Text(
-              controller.status,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-          ),
-          const SizedBox(width: 12),
-          _StatusChip(
-            icon: controller.gemma.current.loaded
-                ? Icons.memory_rounded
-                : Icons.memory_outlined,
-            label: controller.gemma.current.loaded
-                ? 'Gemma ready'
-                : 'AI offline',
-            active: controller.gemma.current.loaded,
-          ),
-          const SizedBox(width: 8),
-          _StatusChip(
-            icon: controller.chatConnected
-                ? Icons.forum_rounded
-                : Icons.forum_outlined,
-            label: controller.chatConnected ? 'Chat live' : 'Chat offline',
-            active: controller.chatConnected,
-          ),
-          const SizedBox(width: 8),
-          IconButton(
-            onPressed: onSettings,
-            icon: const Icon(Icons.tune_rounded),
-            tooltip: 'Control Center',
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-final class _StatusChip extends StatelessWidget {
-  const _StatusChip({
-    required this.icon,
-    required this.label,
-    required this.active,
-  });
-  final IconData icon;
-  final String label;
-  final bool active;
-  @override
-  Widget build(BuildContext context) => Chip(
-    avatar: Icon(icon, size: 15),
-    label: Text(label),
-    backgroundColor: active
-        ? Theme.of(context).colorScheme.primaryContainer.withValues(alpha: .25)
-        : null,
-    visualDensity: VisualDensity.compact,
-  );
-}
-
-final class _Footer extends StatelessWidget {
-  const _Footer({required this.controller});
-  final AppController controller;
-  @override
-  Widget build(BuildContext context) => Row(
-    mainAxisAlignment: MainAxisAlignment.center,
-    children: <Widget>[
-      Text(
-        'T W I T C H   F R E E D O M',
-        style: Theme.of(
-          context,
-        ).textTheme.labelSmall?.copyWith(letterSpacing: 2.5),
-      ),
-      const SizedBox(width: 12),
-      Text(
-        '• local vault • text-only discovery • reversible AI',
-        style: Theme.of(context).textTheme.labelSmall,
-      ),
-    ],
   );
 }
 

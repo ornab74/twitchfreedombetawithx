@@ -934,6 +934,7 @@ final class _SettingsSheetState extends State<SettingsSheet> {
           _authStatus = 'Authorized as ${value.login}';
           _authorization = null;
         });
+        unawaited(widget.controller.refreshLiveStatuses());
       case AppError<TwitchTokenState>(:final error):
         setState(() => _authStatus = error.message);
     }

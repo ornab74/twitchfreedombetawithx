@@ -61,6 +61,7 @@ enum AiBackend { gpuFirst, gpuOnly, cpuOnly, npu }
 
 @immutable
 final class StreamRecord {
+  static const Object _unchangedOnline = Object();
   const StreamRecord({
     required this.id,
     required this.channel,
@@ -146,7 +147,7 @@ final class StreamRecord {
     DateTime? updatedAt,
     DateTime? lastPlayedAt,
     int? playCount,
-    bool? online,
+    Object? online = _unchangedOnline,
   }) => StreamRecord(
     id: id,
     channel: channel,
@@ -162,7 +163,7 @@ final class StreamRecord {
     updatedAt: updatedAt ?? this.updatedAt,
     lastPlayedAt: lastPlayedAt ?? this.lastPlayedAt,
     playCount: playCount ?? this.playCount,
-    online: online ?? this.online,
+    online: identical(online, _unchangedOnline) ? this.online : online as bool?,
   );
 }
 

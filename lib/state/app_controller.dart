@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:collection';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -18,6 +19,8 @@ import '../core/pulse_scheduler.dart';
 import '../core/result.dart';
 import '../core/secure_log.dart';
 import '../playback/playback_controller.dart';
+import '../security/hybrid_pq_crypto.dart';
+import '../security/thumbnail_store.dart';
 import '../security/vault.dart';
 import '../twitch/helix.dart';
 import '../twitch/hls_parser.dart';
@@ -34,6 +37,8 @@ final class AppController extends ChangeNotifier {
     vault = VaultRepository(log: log);
     auth = TwitchAuthService(vault: vault, log: log);
     helix = TwitchHelixService(auth: auth, log: log);
+    thumbnails = ThumbnailStore(vault: vault, log: log);
+    pqCrypto = HybridPqCrypto(vault: vault);
     resolver = TwitchStreamResolver(log: log);
     playback = UnifiedPlaybackController(log: log);
     irc = TwitchIrcClient(log: log);
@@ -98,6 +103,8 @@ final class AppController extends ChangeNotifier {
   late final VaultRepository vault;
   late final TwitchAuthService auth;
   late final TwitchHelixService helix;
+  late final ThumbnailStore thumbnails;
+  late final HybridPqCrypto pqCrypto;
   late final TwitchStreamResolver resolver;
   late final UnifiedPlaybackController playback;
   late final TwitchIrcClient irc;
@@ -124,6 +131,7 @@ final class AppController extends ChangeNotifier {
   AppPreferences _preferences = const AppPreferences();
   List<StreamRecord> _streams = <StreamRecord>[];
   List<DiscoveryStream> _discovery = <DiscoveryStream>[];
+  final Map<String, Uint8List> _thumbnailBytes = <String, Uint8List>{};
   List<ChatMessage> _chat = <ChatMessage>[];
   List<CompanionCard> _companionCards = <CompanionCard>[];
   List<XPost> _xPosts = <XPost>[];
@@ -153,6 +161,8 @@ final class AppController extends ChangeNotifier {
   Timer? _chatPersistTimer;
   Timer? _chatSignalTimer;
   Timer? _xRefreshTimer;
+  Timer? _liveStatusTimer;
+  bool _liveStatusRefreshInFlight = false;
   final Map<String, ChatMessage> _pendingChatPersistence =
       <String, ChatMessage>{};
   final Queue<DateTime> _recentChatTimes = Queue<DateTime>();
@@ -178,6 +188,8 @@ final class AppController extends ChangeNotifier {
       UnmodifiableListView<StreamRecord>(_streams);
   List<DiscoveryStream> get discovery =>
       UnmodifiableListView<DiscoveryStream>(_discovery);
+  Uint8List? thumbnailFor(String channel) =>
+      _thumbnailBytes[channel.trim().toLowerCase()];
   List<ChatMessage> get chat => UnmodifiableListView<ChatMessage>(_chat);
   List<CompanionCard> get companionCards =>
       UnmodifiableListView<CompanionCard>(_companionCards);
@@ -330,6 +342,7 @@ final class AppController extends ChangeNotifier {
       },
     );
     _resetAutoLock();
+    _startLiveStatusRefresh();
     _refreshSchedulerSignals();
     _bootStage = BootStage.ready;
     _status = 'Local vault unlocked. PulseMesh scheduler ready.';
@@ -350,11 +363,15 @@ final class AppController extends ChangeNotifier {
         : AppPreferences.fromJson(prefJson);
     gemma.configureModelDirectory(_preferences.ai.modelDirectory);
     final streamJson = await vault.getAllJson('saved_stream');
-    _streams = streamJson.map(StreamRecord.fromJson).toList()
-      ..sort(
-        (StreamRecord a, StreamRecord b) => (b.lastPlayedAt ?? b.updatedAt)
-            .compareTo(a.lastPlayedAt ?? a.updatedAt),
-      );
+    _streams =
+        streamJson
+            .map(StreamRecord.fromJson)
+            .map((record) => record.copyWith(online: null))
+            .toList()
+          ..sort(
+            (StreamRecord a, StreamRecord b) => (b.lastPlayedAt ?? b.updatedAt)
+                .compareTo(a.lastPlayedAt ?? a.updatedAt),
+          );
     _selected = _streams.isEmpty ? null : _streams.first;
     if (_selected != null) await _loadChatHistory(_selected!.channel);
     agents.configure(
@@ -876,6 +893,7 @@ final class AppController extends ChangeNotifier {
       if (existing == null) _streams.insert(0, record);
       await vault.putJson('saved_stream', record.id, record.toJson());
       await selectStream(record);
+      unawaited(refreshLiveStatuses());
       _pulse(navigation: true);
       notifyListeners();
       return AppSuccess<StreamRecord>(record);
@@ -888,6 +906,69 @@ final class AppController extends ChangeNotifier {
         ),
       );
     }
+  }
+
+  Future<AppResult<Set<String>>> refreshLiveStatuses() async {
+    if (_liveStatusRefreshInFlight) {
+      return AppSuccess<Set<String>>(
+        _streams
+            .where((stream) => stream.online == true)
+            .map((stream) => stream.channel)
+            .toSet(),
+      );
+    }
+    if (!_unlocked || _streams.isEmpty) {
+      return const AppSuccess<Set<String>>(<String>{});
+    }
+    _liveStatusRefreshInFlight = true;
+    try {
+      final result = await helix.onlineChannels(
+        _streams.map((stream) => stream.channel),
+      );
+      if (result case AppError<Set<String>>(:final error)) {
+        // Preserve the last known state on network/auth failures. Showing all
+        // channels as offline would be actively misleading.
+        return AppError<Set<String>>(error);
+      }
+      final online = (result as AppSuccess<Set<String>>).value;
+      var changed = false;
+      for (var index = 0; index < _streams.length; index++) {
+        final record = _streams[index];
+        final next = online.contains(record.channel.toLowerCase());
+        if (record.online == next) continue;
+        final updated = record.copyWith(online: next);
+        _streams[index] = updated;
+        if (_selected?.id == updated.id) _selected = updated;
+        changed = true;
+      }
+      if (changed) {
+        _rankStreamsByLiveStatus();
+        _pulse(navigation: true);
+        notifyListeners();
+      }
+      return AppSuccess<Set<String>>(online);
+    } finally {
+      _liveStatusRefreshInFlight = false;
+    }
+  }
+
+  void _startLiveStatusRefresh() {
+    _liveStatusTimer?.cancel();
+    unawaited(refreshLiveStatuses());
+    _liveStatusTimer = Timer.periodic(
+      const Duration(minutes: 2),
+      (_) => unawaited(refreshLiveStatuses()),
+    );
+  }
+
+  void _rankStreamsByLiveStatus() {
+    // Stable partition: retain the user's existing order inside each status
+    // group while keeping live channels immediately visible.
+    _streams = <StreamRecord>[
+      ..._streams.where((stream) => stream.online == true),
+      ..._streams.where((stream) => stream.online == null),
+      ..._streams.where((stream) => stream.online == false),
+    ];
   }
 
   Future<void> selectStream(StreamRecord record) async {
@@ -912,6 +993,11 @@ final class AppController extends ChangeNotifier {
     );
     _pulse(navigation: true, chat: true, ai: true);
     notifyListeners();
+  }
+
+  Future<void> selectAndPlayStream(StreamRecord record) async {
+    await selectStream(record);
+    await startPlayback();
   }
 
   Future<void> deleteStream(StreamRecord record) async {
@@ -1117,17 +1203,34 @@ final class AppController extends ChangeNotifier {
   Future<AppResult<List<DiscoveryStream>>> searchDiscovery(String query) async {
     _setBusy(true, 'Searching Twitch text metadata…');
     try {
-      final results = query.trim().isEmpty
-          ? await helix.followedStreams()
-          : await helix.searchChannels(query.trim());
-      if (results case AppError<List<DiscoveryStream>>(:final error)) {
+      final normalized = query.trim();
+      final responses = normalized.isEmpty
+          ? <AppResult<List<DiscoveryStream>>>[await helix.followedStreams()]
+          : await Future.wait(<Future<AppResult<List<DiscoveryStream>>>>[
+              helix.searchByCategory(normalized),
+              helix.searchChannels(normalized, first: 100),
+            ]);
+      final successful = responses
+          .whereType<AppSuccess<List<DiscoveryStream>>>()
+          .expand((result) => result.value);
+      if (successful.isEmpty &&
+          responses.any(
+            (result) => result is AppError<List<DiscoveryStream>>,
+          )) {
+        final error =
+            (responses.firstWhere(
+                      (result) => result is AppError<List<DiscoveryStream>>,
+                    )
+                    as AppError<List<DiscoveryStream>>)
+                .error;
         _discovery = <DiscoveryStream>[];
         _setError(error.message);
         return AppError<List<DiscoveryStream>>(error);
       }
-      var candidates = _filterDiscovery(
-        (results as AppSuccess<List<DiscoveryStream>>).value,
-      );
+      final unique = <String, DiscoveryStream>{
+        for (final item in successful) item.channel: item,
+      };
+      var candidates = _filterDiscovery(unique.values.toList(growable: false));
 
       if (_preferences.ai.enabled && gemma.isReady && candidates.length > 1) {
         final reranked = await agents.rerankDiscovery(
@@ -1169,6 +1272,7 @@ final class AppController extends ChangeNotifier {
       }
       _discovery = candidates;
       notifyListeners();
+      unawaited(_cacheDiscoveryThumbnails(candidates));
       return AppSuccess<List<DiscoveryStream>>(candidates);
     } catch (cause) {
       const message = 'Could not load Twitch discovery right now.';
@@ -1183,6 +1287,26 @@ final class AppController extends ChangeNotifier {
       return AppError<List<DiscoveryStream>>(failure);
     } finally {
       _setBusy(false);
+    }
+  }
+
+  Future<void> _cacheDiscoveryThumbnails(
+    Iterable<DiscoveryStream> streams,
+  ) async {
+    for (final item in streams.take(80)) {
+      if (item.thumbnailUrl.isEmpty ||
+          _thumbnailBytes.containsKey(item.channel)) {
+        continue;
+      }
+      final bytes = await thumbnails.fetchAndStore(
+        channel: item.channel,
+        url: item.thumbnailUrl,
+        followed: _streams.any((saved) => saved.channel == item.channel),
+      );
+      if (bytes != null && !_disposed) {
+        _thumbnailBytes[item.channel] = bytes;
+        notifyListeners();
+      }
     }
   }
 
@@ -1365,6 +1489,67 @@ final class AppController extends ChangeNotifier {
     return agents.runBatch(userInitiated: true);
   }
 
+  Future<AppResult<HybridPublicIdentity>> ensureHybridPqIdentity() async {
+    try {
+      if (!vault.isUnlocked) {
+        return const AppError<HybridPublicIdentity>(
+          AppFailure('vault_locked', 'Unlock the vault first.'),
+        );
+      }
+      return AppSuccess<HybridPublicIdentity>(
+        await pqCrypto.ensureDeviceIdentity(),
+      );
+    } catch (cause) {
+      return AppError<HybridPublicIdentity>(
+        AppFailure(
+          'hybrid_pq_unavailable',
+          'Native ML-KEM-768 is unavailable or failed its capability checks.',
+          cause: cause,
+        ),
+      );
+    }
+  }
+
+  Future<AppResult<Map<String, Object?>>> sealAgentContext({
+    required String text,
+    String context = 'agent-context-export/v1',
+  }) async {
+    try {
+      final publicIdentity = await pqCrypto.ensureDeviceIdentity();
+      final envelope = await pqCrypto.sealFor(
+        recipient: publicIdentity,
+        cleartext: utf8.encode(text),
+        context: context,
+      );
+      return AppSuccess<Map<String, Object?>>(envelope);
+    } catch (cause) {
+      return AppError<Map<String, Object?>>(
+        AppFailure(
+          'hybrid_seal_failed',
+          'Could not create the hybrid post-quantum envelope.',
+          cause: cause,
+        ),
+      );
+    }
+  }
+
+  Future<AppResult<String>> openAgentContext(
+    Map<String, Object?> envelope,
+  ) async {
+    try {
+      final clear = await pqCrypto.openDeviceEnvelope(envelope);
+      return AppSuccess<String>(utf8.decode(clear, allowMalformed: false));
+    } catch (cause) {
+      return AppError<String>(
+        AppFailure(
+          'hybrid_open_failed',
+          'The hybrid post-quantum envelope could not be authenticated.',
+          cause: cause,
+        ),
+      );
+    }
+  }
+
   void _applyAssessments(AiBatchReport report) {
     final byId = <String, MessageAssessment>{
       for (final item in report.assessments) item.messageId: item,
@@ -1507,7 +1692,7 @@ final class AppController extends ChangeNotifier {
       (StreamRecord item) => item.id == updated.id,
     );
     if (index >= 0) _streams[index] = updated;
-    _selected = updated;
+    if (_selected?.id == updated.id) _selected = updated;
   }
 
   String? _channelFromInput(String input) {
@@ -1612,6 +1797,8 @@ final class AppController extends ChangeNotifier {
   }
 
   Future<void> lock() async {
+    _liveStatusTimer?.cancel();
+    _liveStatusTimer = null;
     _xRefreshTimer?.cancel();
     _xRefreshTimer = null;
     _speechRecurring?.cancel();
@@ -1730,6 +1917,7 @@ final class AppController extends ChangeNotifier {
     await agents.close();
     await gemma.close();
     await speech.close();
+    thumbnails.dispose();
     await vault.close();
     await scheduler.close();
     playback.dispose();
@@ -1744,6 +1932,7 @@ final class AppController extends ChangeNotifier {
     _chatPersistTimer?.cancel();
     _chatSignalTimer?.cancel();
     _xRefreshTimer?.cancel();
+    _liveStatusTimer?.cancel();
     playback.removeListener(_relay);
     for (final subscription in _subscriptions) {
       unawaited(subscription.cancel());

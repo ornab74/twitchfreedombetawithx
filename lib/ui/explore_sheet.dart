@@ -1,6 +1,9 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
+import '../core/models.dart';
 import '../core/result.dart';
 import '../state/app_controller.dart';
 import '../twitch/helix.dart';
@@ -47,7 +50,8 @@ final class _ExploreSheetState extends State<ExploreSheet> {
     final controller = widget.controller;
     final tokens = freedomTokens(context);
     return FractionallySizedBox(
-      heightFactor: .92,
+      widthFactor: .96,
+      heightFactor: .96,
       child: ClipRRect(
         borderRadius: const BorderRadius.vertical(top: Radius.circular(30)),
         child: Material(
@@ -174,8 +178,13 @@ final class _ExploreSheetState extends State<ExploreSheet> {
                             itemBuilder: (BuildContext context, int index) =>
                                 _DiscoveryCard(
                                   item: controller.discovery[index],
+                                  thumbnail: controller.thumbnailFor(
+                                    controller.discovery[index].channel,
+                                  ),
                                   onAdd: () =>
                                       _add(controller.discovery[index]),
+                                  onPlay: () =>
+                                      _play(controller.discovery[index]),
                                 ),
                           ),
                         ),
@@ -215,6 +224,18 @@ final class _ExploreSheetState extends State<ExploreSheet> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text((result as AppError).error.message)),
       );
+    }
+  }
+
+  Future<void> _play(DiscoveryStream item) async {
+    final added = await widget.controller.addStream(item.channel);
+    if (added is AppSuccess) {
+      await widget.controller.startPlayback();
+      if (mounted) Navigator.pop(context);
+    } else if (added case AppError<StreamRecord>(:final error) when mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error.message)));
     }
   }
 }
@@ -270,7 +291,7 @@ final class _EmptyExplore extends StatelessWidget {
             const SizedBox(height: 10),
           ],
           Text(
-            'Twitch Freedom intentionally does not download preview images, avatars, emotes, or web fonts.',
+            'Previews are accepted only from Twitch CDN over HTTPS, size and signature checked, encrypted locally, and expired automatically.',
             style: Theme.of(context).textTheme.bodySmall,
             textAlign: TextAlign.center,
           ),
@@ -281,125 +302,159 @@ final class _EmptyExplore extends StatelessWidget {
 }
 
 final class _DiscoveryCard extends StatelessWidget {
-  const _DiscoveryCard({required this.item, required this.onAdd});
+  const _DiscoveryCard({
+    required this.item,
+    required this.thumbnail,
+    required this.onAdd,
+    required this.onPlay,
+  });
   final DiscoveryStream item;
+  final Uint8List? thumbnail;
   final VoidCallback onAdd;
+  final VoidCallback onPlay;
 
   @override
   Widget build(BuildContext context) {
     final tokens = freedomTokens(context);
-    return GlassPanel(
-      radius: 20,
-      padding: const EdgeInsets.all(16),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: <Widget>[
-          Container(
-            width: 46,
-            height: 46,
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              color: Theme.of(
-                context,
-              ).colorScheme.primary.withValues(alpha: .15),
-              borderRadius: BorderRadius.circular(15),
+    return InkWell(
+      onTap: onPlay,
+      borderRadius: BorderRadius.circular(20),
+      child: GlassPanel(
+        radius: 20,
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Container(
+              width: 96,
+              height: 54,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: Theme.of(
+                  context,
+                ).colorScheme.primary.withValues(alpha: .15),
+                borderRadius: BorderRadius.circular(15),
+              ),
+              child: thumbnail != null
+                  ? ClipRRect(
+                      borderRadius: BorderRadius.circular(15),
+                      child: Image.memory(
+                        thumbnail!,
+                        fit: BoxFit.cover,
+                        width: 96,
+                        height: 54,
+                        gaplessPlayback: true,
+                        errorBuilder: (_, __, ___) =>
+                            const Icon(Icons.live_tv_rounded),
+                      ),
+                    )
+                  : Text(
+                      item.displayName.isEmpty
+                          ? '?'
+                          : item.displayName.substring(0, 1).toUpperCase(),
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.primary,
+                        fontWeight: FontWeight.w900,
+                        fontSize: 20,
+                      ),
+                    ),
             ),
-            child: Text(
-              item.displayName.isEmpty
-                  ? '?'
-                  : item.displayName.substring(0, 1).toUpperCase(),
-              style: TextStyle(
-                color: Theme.of(context).colorScheme.primary,
-                fontWeight: FontWeight.w900,
-                fontSize: 20,
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Row(
+                    children: <Widget>[
+                      Flexible(
+                        child: Text(
+                          item.displayName,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.titleMedium
+                              ?.copyWith(fontWeight: FontWeight.w800),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Container(
+                        width: 7,
+                        height: 7,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: tokens.danger,
+                        ),
+                      ),
+                      const SizedBox(width: 5),
+                      const Text(
+                        'LIVE',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w800,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ],
+                  ),
+                  if (item.title.isNotEmpty) ...<Widget>[
+                    const SizedBox(height: 5),
+                    Text(
+                      item.title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 6,
+                    children: <Widget>[
+                      if (item.category.isNotEmpty)
+                        _MetaChip(Icons.category_rounded, item.category),
+                      if (item.language.isNotEmpty)
+                        _MetaChip(
+                          Icons.translate_rounded,
+                          item.language.toUpperCase(),
+                        ),
+                      if (item.viewerCount > 0)
+                        _MetaChip(
+                          Icons.visibility_rounded,
+                          NumberFormat.compact().format(item.viewerCount),
+                        ),
+                      _MetaChip(
+                        Icons.schedule_rounded,
+                        DateFormat.Hm().format(item.startedAt.toLocal()),
+                      ),
+                    ],
+                  ),
+                  if (item.reason.isNotEmpty) ...<Widget>[
+                    const SizedBox(height: 8),
+                    Text(
+                      item.reason,
+                      style: Theme.of(
+                        context,
+                      ).textTheme.bodySmall?.copyWith(color: tokens.good),
+                    ),
+                  ],
+                ],
               ),
             ),
-          ),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+            const SizedBox(width: 12),
+            Column(
               children: <Widget>[
-                Row(
-                  children: <Widget>[
-                    Flexible(
-                      child: Text(
-                        item.displayName,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.titleMedium
-                            ?.copyWith(fontWeight: FontWeight.w800),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Container(
-                      width: 7,
-                      height: 7,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: tokens.danger,
-                      ),
-                    ),
-                    const SizedBox(width: 5),
-                    const Text(
-                      'LIVE',
-                      style: TextStyle(
-                        fontWeight: FontWeight.w800,
-                        fontSize: 11,
-                      ),
-                    ),
-                  ],
+                FilledButton.tonalIcon(
+                  onPressed: onPlay,
+                  icon: const Icon(Icons.play_arrow_rounded),
+                  label: const Text('Play'),
                 ),
-                if (item.title.isNotEmpty) ...<Widget>[
-                  const SizedBox(height: 5),
-                  Text(
-                    item.title,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ],
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 6,
-                  children: <Widget>[
-                    if (item.category.isNotEmpty)
-                      _MetaChip(Icons.category_rounded, item.category),
-                    if (item.language.isNotEmpty)
-                      _MetaChip(
-                        Icons.translate_rounded,
-                        item.language.toUpperCase(),
-                      ),
-                    if (item.viewerCount > 0)
-                      _MetaChip(
-                        Icons.visibility_rounded,
-                        NumberFormat.compact().format(item.viewerCount),
-                      ),
-                    _MetaChip(
-                      Icons.schedule_rounded,
-                      DateFormat.Hm().format(item.startedAt.toLocal()),
-                    ),
-                  ],
+                const SizedBox(height: 6),
+                IconButton(
+                  tooltip: 'Save channel',
+                  onPressed: onAdd,
+                  icon: const Icon(Icons.bookmark_add_outlined),
                 ),
-                if (item.reason.isNotEmpty) ...<Widget>[
-                  const SizedBox(height: 8),
-                  Text(
-                    item.reason,
-                    style: Theme.of(
-                      context,
-                    ).textTheme.bodySmall?.copyWith(color: tokens.good),
-                  ),
-                ],
               ],
             ),
-          ),
-          const SizedBox(width: 12),
-          FilledButton.tonalIcon(
-            onPressed: onAdd,
-            icon: const Icon(Icons.add_rounded),
-            label: const Text('Add'),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

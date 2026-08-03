@@ -17,6 +17,7 @@ final class DiscoveryStream {
     required this.language,
     required this.viewerCount,
     required this.startedAt,
+    this.thumbnailUrl = '',
     this.reason = '',
   });
 
@@ -28,6 +29,7 @@ final class DiscoveryStream {
   final String language;
   final int viewerCount;
   final DateTime startedAt;
+  final String thumbnailUrl;
   final String reason;
 
   DiscoveryStream copyWith({String? reason}) => DiscoveryStream(
@@ -39,6 +41,7 @@ final class DiscoveryStream {
     language: language,
     viewerCount: viewerCount,
     startedAt: startedAt,
+    thumbnailUrl: thumbnailUrl,
     reason: reason ?? this.reason,
   );
 }
@@ -126,7 +129,7 @@ final class TwitchHelixService {
 
   Future<AppResult<List<DiscoveryStream>>> searchByCategory(
     String categoryName, {
-    int first = 40,
+    int first = 500,
   }) async {
     try {
       final categories = await _get('/search/categories', <String, String>{
@@ -141,8 +144,8 @@ final class TwitchHelixService {
       );
       return _getStreams(<String, String>{
         'game_id': best['id']! as String,
-        'first': '$first',
-      });
+        'first': '${first.clamp(1, 100)}',
+      }, maxItems: first);
     } catch (error) {
       return AppError<List<DiscoveryStream>>(
         AppFailure(
@@ -188,6 +191,7 @@ final class TwitchHelixService {
                 language: (item['broadcaster_language'] as String?) ?? '',
                 viewerCount: 0,
                 startedAt: DateTime.now(),
+                thumbnailUrl: _safeThumbnail(item['thumbnail_url']),
               );
             })
             .where((DiscoveryStream item) => item.channel.isNotEmpty)
@@ -332,11 +336,23 @@ final class TwitchHelixService {
   Future<AppResult<List<DiscoveryStream>>> _getStreams(
     Map<String, String> query, {
     String path = '/streams',
+    int maxItems = 1000,
   }) async {
     try {
-      final response = await _get(path, query);
-      final data = response['data'] as List<Object?>? ?? const <Object?>[];
+      final data = <Object?>[];
+      String? cursor;
+      do {
+        final pageQuery = <String, String>{...query};
+        if (cursor != null) pageQuery['after'] = cursor;
+        final response = await _get(path, pageQuery);
+        data.addAll(response['data'] as List<Object?>? ?? const <Object?>[]);
+        final pagination = response['pagination'];
+        cursor = pagination is Map<Object?, Object?>
+            ? Map<String, Object?>.from(pagination)['cursor'] as String?
+            : null;
+      } while (cursor != null && cursor.isNotEmpty && data.length < maxItems);
       final streams = data
+          .take(maxItems)
           .map((Object? raw) {
             final item = Map<String, Object?>.from(
               raw! as Map<Object?, Object?>,
@@ -355,6 +371,7 @@ final class TwitchHelixService {
               startedAt:
                   DateTime.tryParse((item['started_at'] as String?) ?? '') ??
                   DateTime.now(),
+              thumbnailUrl: _safeThumbnail(item['thumbnail_url']),
             );
           })
           .where((DiscoveryStream item) => item.channel.isNotEmpty)
@@ -437,6 +454,22 @@ final class TwitchHelixService {
         .replaceAll(RegExp(r'[\x00-\x1F\x7F]'), ' ')
         .trim();
     return text.length > 500 ? text.substring(0, 500) : text;
+  }
+
+  String _safeThumbnail(Object? value) {
+    final raw = value?.toString().trim() ?? '';
+    if (raw.isEmpty) return '';
+    final expanded = raw
+        .replaceAll('{width}', '640')
+        .replaceAll('{height}', '360');
+    final uri = Uri.tryParse(expanded);
+    final host = uri?.host.toLowerCase() ?? '';
+    if (uri == null ||
+        uri.scheme != 'https' ||
+        !(host == 'jtvnw.net' || host.endsWith('.jtvnw.net'))) {
+      return '';
+    }
+    return uri.toString();
   }
 
   bool _validLogin(String value) =>

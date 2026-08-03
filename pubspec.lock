@@ -589,6 +589,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "9.5.0"
+  oqs:
+    dependency: "direct main"
+    description:
+      name: oqs
+      sha256: "15a9c6381f698410a439fc8e5b62ed69eeb5506fcf4c1ddfce39cf37c03dae16"
+      url: "https://pub.dev"
+    source: hosted
+    version: "3.3.1"
   package_config:
     dependency: transitive
     description:

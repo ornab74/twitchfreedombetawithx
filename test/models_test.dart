@@ -3,6 +3,30 @@ import 'package:twitch_freedom_ultra/core/app_config.dart';
 import 'package:twitch_freedom_ultra/core/models.dart';
 
 void main() {
+  test('stream live status can be explicitly reset to unknown', () {
+    final now = DateTime.utc(2026);
+    final stream = StreamRecord(
+      id: 'stream-1',
+      channel: 'example',
+      displayName: 'Example',
+      url: Uri.https('www.twitch.tv', '/example'),
+      title: '',
+      category: '',
+      language: 'en',
+      playbackMode: PlaybackMode.video,
+      quality: 'best',
+      volume: 1,
+      createdAt: now,
+      updatedAt: now,
+      playCount: 0,
+      online: true,
+    );
+
+    expect(stream.copyWith().online, isTrue);
+    expect(stream.copyWith(online: null).online, isNull);
+    expect(stream.copyWith(online: false).online, isFalse);
+  });
+
   test('Gemma artifact pin uses immutable revision and matching digest', () {
     expect(
       AppConfig.gemmaModelUri.path,
