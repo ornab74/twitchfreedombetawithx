@@ -4,6 +4,16 @@ https://github.com/user-attachments/assets/02d51c6e-7179-4090-a43f-2e450480a2d1
 
 # TwitchX Freedom
 
+![TwitchX Freedom demo](demo/image.png)
+
+### Channel directory
+
+![TwitchX Freedom channel directory](demo/demo2.png)
+
+### Themes and appearance
+
+![TwitchX Freedom themes and appearance settings](demo/demo3.png)
+
 Twitch Freedom is a private, local-first Twitch player built with Flutter. It
 plays streams, connects to Twitch chat, and can optionally run speech-to-text
 and a local Gemma assistant on your own device.
