@@ -153,7 +153,7 @@ jobs:
             "${{ matrix.artifact }}.tar.gz" \
             > "${{ matrix.artifact }}.sha256"
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: ${{ matrix.artifact }}
           path: |
@@ -193,7 +193,7 @@ jobs:
         run: |
           sha256sum build/app/outputs/flutter-apk/app-release.apk > TwitchFreedom-Android-arm64.sha256
           sha256sum build/app/outputs/bundle/release/app-release.aab >> TwitchFreedom-Android-arm64.sha256
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: TwitchFreedom-Android-arm64
           path: |
@@ -230,7 +230,7 @@ jobs:
         run: |
           ditto -c -k --sequesterRsrc --keepParent build/ios/iphoneos/Runner.app TwitchFreedom-iOS-unsigned.zip
           shasum -a 256 TwitchFreedom-iOS-unsigned.zip > TwitchFreedom-iOS-unsigned.sha256
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: TwitchFreedom-iOS-unsigned
           path: |
