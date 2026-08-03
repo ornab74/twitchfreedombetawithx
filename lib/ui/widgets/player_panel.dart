@@ -243,9 +243,9 @@ final class _PlayerPanelState extends State<PlayerPanel> {
                         : _qualities,
                     labelFor: (String value) => value,
                     icon: Icons.high_quality_rounded,
-                    onSelected: _mode == PlaybackMode.audioOnly
+                    onSelected: _mode == PlaybackMode.audioOnly || _busy
                         ? null
-                        : (String value) => setState(() => _quality = value),
+                        : _selectQuality,
                   ),
                   const SizedBox(width: 10),
                   FilledButton.icon(
@@ -321,7 +321,11 @@ final class _PlayerPanelState extends State<PlayerPanel> {
                 borderRadius: BorderRadius.circular(20),
                 border: Border.all(color: tokens.border),
               ),
-              clipBehavior: Clip.hardEdge,
+              // Clipping the platform video texture makes Flutter composite a
+              // rounded clip for every decoded frame. The texture already
+              // stays inside these bounds; painting the rounded border without
+              // a clip preserves the frame while keeping presentation cheap.
+              clipBehavior: Clip.none,
               child: selected == null
                   ? const _EmptyPlayer(
                       icon: Icons.add_to_queue_rounded,
@@ -390,6 +394,13 @@ final class _PlayerPanelState extends State<PlayerPanel> {
         PlaybackHealth.failed || PlaybackHealth.stopped => tokens.danger,
         PlaybackHealth.idle => Theme.of(context).colorScheme.onSurfaceVariant,
       };
+
+  void _selectQuality(String value) {
+    if (_quality == value) return;
+    setState(() => _quality = value);
+    if (widget.controller.selected == null) return;
+    unawaited(widget.controller.startPlayback(quality: value, mode: _mode));
+  }
 
   String _healthLabel(PlaybackHealth health) => switch (health) {
     PlaybackHealth.idle => 'Ready',
@@ -630,9 +641,11 @@ final class _OverlayControlsState extends State<_OverlayControls> {
     final playback = widget.controller.playback;
     if (playback.volume > 0) {
       _unmutedVolume = playback.volume;
-      unawaited(playback.setVolume(0));
+      unawaited(widget.controller.setPlaybackVolume(0));
     } else {
-      unawaited(playback.setVolume(_unmutedVolume.clamp(.1, 2)));
+      unawaited(
+        widget.controller.setPlaybackVolume(_unmutedVolume.clamp(.1, 4)),
+      );
     }
     _reveal();
   }
@@ -698,9 +711,13 @@ final class _OverlayControlsState extends State<_OverlayControls> {
                                       child: Slider(
                                         value: playback.volume,
                                         min: 0,
-                                        max: 2,
+                                        max: 4,
                                         onChanged: (double value) {
-                                          unawaited(playback.setVolume(value));
+                                          unawaited(
+                                            widget.controller.setPlaybackVolume(
+                                              value,
+                                            ),
+                                          );
                                           _reveal();
                                         },
                                       ),

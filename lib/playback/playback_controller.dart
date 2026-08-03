@@ -75,6 +75,8 @@ final class UnifiedPlaybackController extends ChangeNotifier {
       const SecureVideoCachePolicy.videoLowLatency();
   bool _lowLatency = true;
   VideoAcceleration _videoAcceleration = VideoAcceleration.automatic;
+  int _decoderProbeGeneration = 0;
+  String _activeHardwareDecoder = '';
 
   PlaybackHealth get health => _health;
   StreamVariant? get variant => _variant;
@@ -94,6 +96,7 @@ final class UnifiedPlaybackController extends ChangeNotifier {
   SecureVideoCachePolicy get cachePolicy => _cachePolicy;
   bool get constrainedMediaOutput => _softwareMediaOutput;
   VideoAcceleration get videoAcceleration => _videoAcceleration;
+  String get activeHardwareDecoder => _activeHardwareDecoder;
 
   bool willUseSoftwareOutput(VideoAcceleration acceleration) =>
       acceleration == VideoAcceleration.softwareCpu ||
@@ -183,6 +186,7 @@ final class UnifiedPlaybackController extends ChangeNotifier {
   void _bindStreams(Player player) {
     _subscriptions.add(
       player.stream.playing.listen((bool value) {
+        if (_playing == value && !(value && _buffering)) return;
         _playing = value;
         if (value) {
           _buffering = false;
@@ -227,8 +231,10 @@ final class UnifiedPlaybackController extends ChangeNotifier {
     );
     _subscriptions.add(
       player.stream.duration.listen((Duration value) {
+        // A live HLS timeline may report an advancing duration many times per
+        // second. Telemetry samples this field directly; widget listeners do
+        // not need to rebuild for it.
         _duration = value;
-        notifyListeners();
       }),
     );
     _subscriptions.add(
@@ -242,7 +248,6 @@ final class UnifiedPlaybackController extends ChangeNotifier {
           _error = value;
           _scheduleRecovery();
         }
-        notifyListeners();
       }),
     );
     _subscriptions.add(
@@ -278,13 +283,15 @@ final class UnifiedPlaybackController extends ChangeNotifier {
       _channel = channel;
       _variant = variant;
       _lastUri = variant.uri;
+      final decoderProbe = ++_decoderProbeGeneration;
+      _activeHardwareDecoder = '';
       _error = '';
       if (resetRecoveryBudget) {
         _reconnectAttempt = 0;
         _bufferingEvents = 0;
         _sessionStartedAt = DateTime.now();
       }
-      _volume = volume.clamp(0.0, 2.0).toDouble();
+      _volume = volume.clamp(0.0, 4.0).toDouble();
       _setHealth(PlaybackHealth.resolving);
 
       final nativeAllowed =
@@ -301,12 +308,12 @@ final class UnifiedPlaybackController extends ChangeNotifier {
         );
         _nativeController = controller;
         await controller.initialize();
-        await controller.setVolume((_volume / 2).clamp(0.0, 1.0).toDouble());
+        await controller.setVolume(_volume.clamp(0.0, 1.0).toDouble());
         await controller.play();
         _playing = true;
         _setHealth(PlaybackHealth.healthy);
       } else {
-        await player.setVolume((_volume * 50).clamp(0.0, 100.0).toDouble());
+        await _commitVolume();
         await player.open(
           Media(
             variant.uri.toString(),
@@ -322,6 +329,7 @@ final class UnifiedPlaybackController extends ChangeNotifier {
           ),
           play: true,
         );
+        unawaited(_inspectActiveDecoder(player, decoderProbe));
       }
       await _setWakelock(enabled: true);
       _log.info('Started ${variant.qualityLabel} playback for $channel.');
@@ -387,7 +395,7 @@ final class UnifiedPlaybackController extends ChangeNotifier {
   Future<void> toggle() => _playing ? pause() : resume();
 
   Future<void> setVolume(double value) async {
-    _volume = value.clamp(0.0, 2.0).toDouble();
+    _volume = value.clamp(0.0, 4.0).toDouble();
     notifyListeners();
     _volumeCommitTimer?.cancel();
     _volumeCommitTimer = Timer(const Duration(milliseconds: 32), () {
@@ -398,11 +406,53 @@ final class UnifiedPlaybackController extends ChangeNotifier {
   Future<void> _commitVolume() async {
     _volumeCommitTimer = null;
     if (_useNativeVideoPlayer) {
-      await _nativeController?.setVolume(
-        (_volume / 2).clamp(0.0, 1.0).toDouble(),
-      );
+      await _nativeController?.setVolume(_volume.clamp(0.0, 1.0).toDouble());
     } else {
-      await _player?.setVolume((_volume * 50).clamp(0.0, 100.0).toDouble());
+      final player = _player;
+      if (player == null) return;
+      final platform = player.platform;
+      if (platform is NativePlayer) {
+        await platform.waitForPlayerInitialization;
+        await platform.setProperty(
+          'volume',
+          (_volume * 100).round().toString(),
+          waitForInitialization: false,
+        );
+      } else {
+        await player.setVolume((_volume * 100).clamp(0.0, 100.0).toDouble());
+      }
+    }
+  }
+
+  Future<void> _inspectActiveDecoder(Player player, int generation) async {
+    await Future<void>.delayed(const Duration(milliseconds: 1200));
+    if (generation != _decoderProbeGeneration || _player != player) return;
+    final platform = player.platform;
+    if (platform is! NativePlayer) return;
+    try {
+      final hwdec = (await platform.getProperty(
+        'hwdec-current',
+        waitForInitialization: false,
+      )).trim();
+      final format = (await platform.getProperty(
+        'video-format',
+        waitForInitialization: false,
+      )).trim();
+      if (generation != _decoderProbeGeneration || _player != player) return;
+      _activeHardwareDecoder = hwdec == 'no' ? '' : hwdec;
+      if (_activeHardwareDecoder.isEmpty) {
+        _log.warning(
+          'Video texture is GPU-rendered, but codec decode is software '
+          '(format=${format.isEmpty ? 'unknown' : format}).',
+        );
+      } else {
+        _log.info(
+          'Active hardware video decoder: $_activeHardwareDecoder '
+          '(format=${format.isEmpty ? 'unknown' : format}).',
+        );
+      }
+    } catch (cause) {
+      _log.warning('Could not inspect the active mpv decoder: $cause');
     }
   }
 
@@ -417,6 +467,8 @@ final class UnifiedPlaybackController extends ChangeNotifier {
     _bufferingTimer?.cancel();
     _bufferingTimer = null;
     _backendBuffering = false;
+    _decoderProbeGeneration += 1;
+    _activeHardwareDecoder = '';
     final native = _nativeController;
     _nativeController = null;
     if (native != null) {
@@ -639,17 +691,32 @@ final class SecureVideoCachePolicy {
         // These remain harmless when a hardware decoder is active, while
         // bounding the silent FFmpeg software fallback common in packaged
         // Linux installs whose render node exists but VA-API does not.
-        'vd-lavc-threads': '3',
+        // Hardware decode ignores this; four workers keep a transient FFmpeg
+        // fallback capable of sustaining 1080p60 without oversubscribing the
+        // eight-vCPU Crostini guest.
+        'vd-lavc-threads': softwareRendering ? '3' : '4',
+        'vd-lavc-fast': 'yes',
         'scale': 'bilinear',
         'cscale': 'bilinear',
         'dscale': 'bilinear',
         'deband': 'no',
         'interpolation': 'no',
+        // The app deliberately uses bilinear scaling and no interpolation or
+        // debanding. Dumb mode lets mpv skip its advanced shader pipeline and
+        // intermediate render passes for substantially cheaper EGL frames.
+        'gpu-dumb-mode': 'yes',
+        // mpv's normal 100% remains the UI's 100%. Native desktop playback
+        // may intentionally amplify above it; the UI caps this at 400%.
+        'volume-max': '400',
         if (softwareRendering) ...<String, String>{
           // Enforce this at mpv level as well as VideoController level so
           // FFmpeg never probes VAAPI/VDPAU in Crostini.
           'hwdec': 'no',
           'vd-lavc-dr': 'no',
+          // Preserve every frame while reducing H.264 CPU work. Skipping the
+          // loop filter only on non-reference frames cannot affect later frame
+          // prediction and is much safer than skip-frame based tuning.
+          'vd-lavc-skiploopfilter': 'nonref',
         } else ...<String, String>{'hwdec': 'auto-safe', 'vd-lavc-dr': 'yes'},
       };
 

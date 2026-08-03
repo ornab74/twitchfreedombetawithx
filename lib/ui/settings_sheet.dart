@@ -34,6 +34,7 @@ final class SettingsSheet extends StatefulWidget {
 
 final class _SettingsSheetState extends State<SettingsSheet> {
   late AppPreferences _draft;
+  late ThemeProfile _originalTheme;
   final TextEditingController _clientId = TextEditingController();
   final TextEditingController _clientSecret = TextEditingController();
   final TextEditingController _categories = TextEditingController();
@@ -43,11 +44,13 @@ final class _SettingsSheetState extends State<SettingsSheet> {
   String _authStatus = 'Not checked';
   bool _pollCancelled = false;
   bool _saving = false;
+  bool _saved = false;
 
   @override
   void initState() {
     super.initState();
     _draft = widget.controller.preferences;
+    _originalTheme = _draft.theme;
     _categories.text = _draft.discovery.categories.join(', ');
     _languages.text = _draft.discovery.languages.join(', ');
     _excludedChannels.text = _draft.discovery.excludedChannels.join(', ');
@@ -57,6 +60,7 @@ final class _SettingsSheetState extends State<SettingsSheet> {
   @override
   void dispose() {
     _pollCancelled = true;
+    if (!_saved) widget.controller.previewTheme(_originalTheme);
     _clientId.dispose();
     _clientSecret.dispose();
     _categories.dispose();
@@ -148,9 +152,7 @@ final class _SettingsSheetState extends State<SettingsSheet> {
                                   ),
                                 )
                                 .toList(growable: false),
-                            onChanged: (ThemeProfile? value) => _change(
-                              _draft.copyWith(theme: value ?? _draft.theme),
-                            ),
+                            onChanged: _previewTheme,
                           ),
                           _Switch(
                             'Show stream titles',
@@ -848,6 +850,12 @@ final class _SettingsSheetState extends State<SettingsSheet> {
   }
 
   void _change(AppPreferences value) => setState(() => _draft = value);
+  void _previewTheme(ThemeProfile? value) {
+    if (value == null) return;
+    _change(_draft.copyWith(theme: value));
+    widget.controller.previewTheme(value);
+  }
+
   void _setAi(AiFeatureSettings value) => _change(_draft.copyWith(ai: value));
   void _setDiscovery(DiscoveryPreference value) =>
       _change(_draft.copyWith(discovery: value));
@@ -863,6 +871,7 @@ final class _SettingsSheetState extends State<SettingsSheet> {
 
   Future<void> _saveAndClose() async {
     await widget.controller.updatePreferences(_draft);
+    _saved = true;
     if (mounted) Navigator.pop(context);
   }
 

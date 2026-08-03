@@ -73,8 +73,11 @@ jobs:
         shell: bash
         run: |
           ./tool/bootstrap_liboqs_linux.sh
-          echo "6dc25767b485445c20aa33f00a0fcc7c60016f6750f786021cc7a324517fadf9  native/linux/liboqs.so" | sha256sum --check --strict
           file native/linux/liboqs.so | grep -q 'ELF 64-bit.*x86-64'
+          nm -D native/linux/liboqs.so | grep -q 'OQS_KEM_ml_kem_768'
+          LIBOQS_SHA256="$(sha256sum native/linux/liboqs.so | cut -d ' ' -f 1)"
+          test "${#LIBOQS_SHA256}" -eq 64
+          echo "LIBOQS_SHA256=$LIBOQS_SHA256" >> "$GITHUB_ENV"
 
       - name: Verify release version
         run: dart run tool/verify_release_version.dart ${{ env.APP_VERSION }}
@@ -85,11 +88,22 @@ jobs:
         run: ./tool/verify_linux_ready.sh
 
       - name: Analyze and test
+        shell: bash
         run: |
           flutter analyze --no-fatal-infos
-          flutter test
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            flutter test --dart-define=TWITCH_FREEDOM_LIBOQS_SHA256="$LIBOQS_SHA256"
+          else
+            flutter test
+          fi
+
+      - name: Build desktop bundle (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: flutter build linux --release --dart-define=TWITCH_FREEDOM_LIBOQS_SHA256="$LIBOQS_SHA256"
 
       - name: Build desktop bundle
+        if: runner.os != 'Linux'
         run: flutter build ${{ matrix.platform }} --release
 
       - name: Verify bundled ML-KEM provider
@@ -97,7 +111,8 @@ jobs:
         shell: bash
         run: |
           test -s build/linux/x64/release/bundle/lib/liboqs.so
-          echo "6dc25767b485445c20aa33f00a0fcc7c60016f6750f786021cc7a324517fadf9  build/linux/x64/release/bundle/lib/liboqs.so" | sha256sum --check --strict
+          echo "$LIBOQS_SHA256  build/linux/x64/release/bundle/lib/liboqs.so" | sha256sum --check --strict
+          cmp native/linux/liboqs.so build/linux/x64/release/bundle/lib/liboqs.so
 
       - name: Package Windows
         if: runner.os == 'Windows'

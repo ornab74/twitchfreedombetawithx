@@ -15,10 +15,20 @@ final class TwitchFreedomApp extends StatefulWidget {
 }
 
 final class _TwitchFreedomAppState extends State<TwitchFreedomApp> {
+  late ThemeProfile _theme;
+
   @override
   void initState() {
     super.initState();
+    _theme = widget.controller.preferences.theme;
+    widget.controller.preferencesRevision.addListener(_handlePreferences);
     widget.controller.bootstrap();
+  }
+
+  void _handlePreferences() {
+    final next = widget.controller.preferences.theme;
+    if (!mounted || next == _theme) return;
+    setState(() => _theme = next);
   }
 
   @override
@@ -31,7 +41,7 @@ final class _TwitchFreedomAppState extends State<TwitchFreedomApp> {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'Twitch Freedom',
-      theme: FreedomTheme.fromProfile(controller.preferences.theme),
+      theme: FreedomTheme.fromProfile(_theme),
       themeAnimationDuration: Duration.zero,
       home: _AppSurface(controller: controller),
       builder: (BuildContext context, Widget? child) => MediaQuery(
@@ -47,6 +57,7 @@ final class _TwitchFreedomAppState extends State<TwitchFreedomApp> {
 
   @override
   void dispose() {
+    widget.controller.preferencesRevision.removeListener(_handlePreferences);
     widget.controller.dispose();
     super.dispose();
   }

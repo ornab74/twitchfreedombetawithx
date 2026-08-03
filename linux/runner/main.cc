@@ -46,8 +46,10 @@ bool HasOpenGlLoader() {
 }
 
 bool HasHardwareVideoDevice() {
-  // VA-API (Intel/AMD and many virtual GPUs) uses the render node. NVIDIA's
-  // proprietary decoder may expose /dev/nvidia0 instead.
+  // VA-API (including Crostini's forwarded media/render path) uses the DRM
+  // render node. NVIDIA's proprietary decoder may expose /dev/nvidia0. mpv's
+  // auto-safe policy performs the codec/API validation after this capability
+  // gate; the runner must not downgrade a working Crostini EGL path to CPU.
   return HasUsableRenderNode() || access("/dev/nvidia0", R_OK | W_OK) == 0;
 }
 

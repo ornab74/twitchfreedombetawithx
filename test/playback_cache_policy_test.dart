@@ -32,15 +32,20 @@ void main() {
     expect(native['demuxer-max-back-bytes'], '0');
     expect(native['hwdec'], 'no');
     expect(native['vd-lavc-threads'], '3');
+    expect(native['vd-lavc-fast'], 'yes');
+    expect(native['vd-lavc-skiploopfilter'], 'nonref');
+    expect(native['volume-max'], '400');
     expect(native.containsKey('framedrop'), isFalse);
     expect(native.containsKey('video-sync'), isFalse);
     expect(native['scale'], 'bilinear');
+    expect(native['gpu-dumb-mode'], 'yes');
 
     final automaticFallback = standard.nativeProperties(
       softwareRendering: false,
     );
     expect(automaticFallback['hwdec'], 'auto-safe');
-    expect(automaticFallback['vd-lavc-threads'], '3');
+    expect(automaticFallback['vd-lavc-threads'], '4');
+    expect(automaticFallback['vd-lavc-fast'], 'yes');
     expect(automaticFallback.containsKey('framedrop'), isFalse);
   });
 

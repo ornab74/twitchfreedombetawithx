@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../core/app_config.dart';
 import '../state/app_controller.dart';
@@ -33,6 +34,9 @@ final class _HomeScreenState extends State<HomeScreen> {
   _layout;
   int _mobileTab = 0;
   bool _xMode = false;
+  int _chatComposeSequence = 0;
+  late final ValueNotifier<ChatComposeRequest> _chatComposeRequests =
+      ValueNotifier<ChatComposeRequest>(const ChatComposeRequest(0, ''));
 
   @override
   void initState() {
@@ -40,6 +44,7 @@ final class _HomeScreenState extends State<HomeScreen> {
     _drawerOpen = widget.controller.preferences.drawerOpen;
     _layout = _readLayout();
     widget.controller.preferencesRevision.addListener(_handlePreferences);
+    HardwareKeyboard.instance.addHandler(_handleGlobalComposeKey);
   }
 
   ({bool compactDensity, bool reduceMotion, bool drawerOpen, bool aiEnabled})
@@ -73,42 +78,47 @@ final class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     final controller = widget.controller;
     return Scaffold(
-      body: Listener(
-        onPointerDown: (_) => controller.userActivity(),
-        child: Stack(
-          fit: StackFit.expand,
-          children: <Widget>[
-            const RepaintBoundary(child: _FuturistBackground()),
-            LayoutBuilder(
-              builder: (BuildContext context, BoxConstraints constraints) {
-                // Window managers report a sequence of very small transient
-                // surfaces while minimizing, maximizing, or crossing display
-                // boundaries. Do not mount the fixed compact shell until a
-                // useful body size is available.
-                if (constraints.maxWidth < 340 || constraints.maxHeight < 500) {
-                  return const _TinyWindowSurface();
-                }
-                // Avoid forcing the three-column mockup into dimensions where
-                // its fixed headers and editors cannot fit. This also removes
-                // resize-time RenderFlex churn from short or narrow windows.
-                final compact =
-                    constraints.maxWidth < 1100 || constraints.maxHeight < 820;
-                if (compact) return _buildCompact(context);
-                return _buildDesktop(context, constraints);
-              },
-            ),
-            ValueListenableBuilder<int>(
-              valueListenable: controller.shellRevision,
-              builder: (_, __, ___) => Stack(
-                fit: StackFit.expand,
-                children: <Widget>[
-                  if (controller.busy) const _BusyOverlay(),
-                  if (controller.error.isNotEmpty)
-                    _ErrorBanner(controller: controller),
-                ],
+      body: Focus(
+        autofocus: true,
+        child: Listener(
+          onPointerDown: (_) => controller.userActivity(),
+          child: Stack(
+            fit: StackFit.expand,
+            children: <Widget>[
+              const RepaintBoundary(child: _FuturistBackground()),
+              LayoutBuilder(
+                builder: (BuildContext context, BoxConstraints constraints) {
+                  // Window managers report a sequence of very small transient
+                  // surfaces while minimizing, maximizing, or crossing display
+                  // boundaries. Do not mount the fixed compact shell until a
+                  // useful body size is available.
+                  if (constraints.maxWidth < 340 ||
+                      constraints.maxHeight < 500) {
+                    return const _TinyWindowSurface();
+                  }
+                  // Avoid forcing the three-column mockup into dimensions where
+                  // its fixed headers and editors cannot fit. This also removes
+                  // resize-time RenderFlex churn from short or narrow windows.
+                  final compact =
+                      constraints.maxWidth < 1100 ||
+                      constraints.maxHeight < 820;
+                  if (compact) return _buildCompact(context);
+                  return _buildDesktop(context, constraints);
+                },
               ),
-            ),
-          ],
+              ValueListenableBuilder<int>(
+                valueListenable: controller.shellRevision,
+                builder: (_, __, ___) => Stack(
+                  fit: StackFit.expand,
+                  children: <Widget>[
+                    if (controller.busy) const _BusyOverlay(),
+                    if (controller.error.isNotEmpty)
+                      _ErrorBanner(controller: controller),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -197,7 +207,10 @@ final class _HomeScreenState extends State<HomeScreen> {
                           Expanded(
                             flex: constraints.maxWidth > 1400 ? 3 : 4,
                             child: RepaintBoundary(
-                              child: ChatPanel(controller: controller),
+                              child: ChatPanel(
+                                controller: controller,
+                                composeRequests: _chatComposeRequests,
+                              ),
                             ),
                           ),
                         ],
@@ -223,7 +236,10 @@ final class _HomeScreenState extends State<HomeScreen> {
     // trigger hidden chat and AI layout work on compact windows.
     final page = switch (selectedPage) {
       0 => PlayerPanel(controller: controller),
-      1 => ChatPanel(controller: controller),
+      1 => ChatPanel(
+        controller: controller,
+        composeRequests: _chatComposeRequests,
+      ),
       2 => AiCompanionPanel(controller: controller),
       _ => XModeScreen(controller: controller),
     };
@@ -299,6 +315,40 @@ final class _HomeScreenState extends State<HomeScreen> {
         ],
       ),
     );
+  }
+
+  bool _handleGlobalComposeKey(KeyEvent event) {
+    if (event is! KeyDownEvent ||
+        HardwareKeyboard.instance.isControlPressed ||
+        HardwareKeyboard.instance.isAltPressed ||
+        HardwareKeyboard.instance.isMetaPressed) {
+      return false;
+    }
+    if (ModalRoute.of(context)?.isCurrent != true) return false;
+    final focusedContext = FocusManager.instance.primaryFocus?.context;
+    if (focusedContext?.widget is EditableText ||
+        focusedContext?.findAncestorWidgetOfExactType<EditableText>() != null) {
+      return false;
+    }
+    final character = event.character;
+    if (character == null ||
+        character.isEmpty ||
+        character.runes.any((rune) => rune < 0x20 || rune == 0x7f)) {
+      return false;
+    }
+    setState(() {
+      _xMode = false;
+      _mobileTab = 1;
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _chatComposeSequence += 1;
+      _chatComposeRequests.value = ChatComposeRequest(
+        _chatComposeSequence,
+        character,
+      );
+    });
+    return true;
   }
 
   Future<void> _showMobileStreams(BuildContext context) async {
@@ -399,6 +449,8 @@ final class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     widget.controller.preferencesRevision.removeListener(_handlePreferences);
+    HardwareKeyboard.instance.removeHandler(_handleGlobalComposeKey);
+    _chatComposeRequests.dispose();
     super.dispose();
   }
 }

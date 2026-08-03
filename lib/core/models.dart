@@ -126,7 +126,9 @@ final class StreamRecord {
       (json['playbackMode'] as String?) ?? 'video',
     ),
     quality: (json['quality'] as String?) ?? 'best',
-    volume: (json['volume'] as num?)?.toDouble() ?? 1,
+    volume: ((json['volume'] as num?)?.toDouble() ?? 1)
+        .clamp(0.0, 4.0)
+        .toDouble(),
     createdAt: DateTime.parse(json['createdAt']! as String),
     updatedAt: DateTime.parse(json['updatedAt']! as String),
     lastPlayedAt: json['lastPlayedAt'] == null

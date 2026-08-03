@@ -161,6 +161,7 @@ final class AppController extends ChangeNotifier {
   PulseRecurringHandle? _speechRecurring;
   Timer? _chatPersistTimer;
   Timer? _chatSignalTimer;
+  Timer? _volumePersistTimer;
   Timer? _xRefreshTimer;
   Timer? _liveStatusTimer;
   bool _liveStatusRefreshInFlight = false;
@@ -1136,6 +1137,30 @@ final class AppController extends ChangeNotifier {
     _refreshSchedulerSignals(playbackActive: false);
   }
 
+  Future<void> setPlaybackVolume(double value) async {
+    await playback.setVolume(value);
+    final recordId = _selected?.id;
+    if (recordId == null) return;
+    final persistedVolume = playback.volume;
+    _volumePersistTimer?.cancel();
+    _volumePersistTimer = Timer(const Duration(milliseconds: 450), () async {
+      _volumePersistTimer = null;
+      final record = _streams
+          .where((StreamRecord item) => item.id == recordId)
+          .firstOrNull;
+      if (record == null) return;
+      final updated = record.copyWith(
+        volume: persistedVolume,
+        updatedAt: DateTime.now(),
+      );
+      _replaceRecord(updated);
+      _pulse(navigation: true);
+      if (vault.isUnlocked) {
+        await vault.putJson('saved_stream', updated.id, updated.toJson());
+      }
+    });
+  }
+
   Future<AppResult<void>> connectChat({bool quiet = false}) async {
     final record = _selected;
     if (record == null)
@@ -1445,6 +1470,13 @@ final class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
+  void previewTheme(ThemeProfile theme) {
+    if (_preferences.theme == theme) return;
+    _preferences = _preferences.copyWith(theme: theme);
+    _pulse(preferences: true);
+    notifyListeners();
+  }
+
   Future<AppResult<void>> setClosedCaptions(bool enabled) async {
     if (enabled && !speech.current.installed) {
       const failure = AppFailure(
@@ -1726,7 +1758,13 @@ final class AppController extends ChangeNotifier {
 
   void _queueChatPersistence(ChatMessage message) {
     _pendingChatPersistence[message.id] = message;
-    _chatPersistTimer ??= Timer(const Duration(milliseconds: 650), () {
+    // Chat remains immediate in memory/UI. During video playback, coalesce a
+    // slightly larger encrypted batch to avoid repeated AES-GCM work and FULL
+    // WAL commits competing with the 60 FPS raster thread.
+    final delay = playback.playing
+        ? const Duration(seconds: 2)
+        : const Duration(milliseconds: 650);
+    _chatPersistTimer ??= Timer(delay, () {
       _chatPersistTimer = null;
       unawaited(_flushPendingChatPersistence());
     });
@@ -2013,6 +2051,7 @@ final class AppController extends ChangeNotifier {
     _speechRecurring?.cancel();
     _chatPersistTimer?.cancel();
     _chatSignalTimer?.cancel();
+    _volumePersistTimer?.cancel();
     _xRefreshTimer?.cancel();
     _liveStatusTimer?.cancel();
     playback.removeListener(_relay);

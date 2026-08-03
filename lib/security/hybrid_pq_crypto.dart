@@ -70,8 +70,15 @@ final class HybridPqCrypto {
       'TF-HYBRID-MLKEM768-X25519-HKDFSHA256-AES256GCM-v1';
   static const String _identityType = 'hybrid_pq_identity';
   static const String _identityId = 'device-v1';
-  static const String _linuxX64LibrarySha256 =
-      '6dc25767b485445c20aa33f00a0fcc7c60016f6750f786021cc7a324517fadf9';
+  // A liboqs build is not byte-reproducible across compiler/linker versions.
+  // Release CI injects the digest of the provider it just built from the
+  // pinned source commit. The default is the audited repository build used by
+  // local development and tests.
+  static const String _linuxX64LibrarySha256 = String.fromEnvironment(
+    'TWITCH_FREEDOM_LIBOQS_SHA256',
+    defaultValue:
+        '6dc25767b485445c20aa33f00a0fcc7c60016f6750f786021cc7a324517fadf9',
+  );
   static String? _verifiedBundledLibrary;
 
   final VaultRepository _vault;

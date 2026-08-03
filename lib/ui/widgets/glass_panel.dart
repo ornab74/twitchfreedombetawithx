@@ -11,7 +11,7 @@ final class GlassPanel extends StatelessWidget {
     this.radius = 24,
     this.blur = 18,
     this.elevated = false,
-    this.clip = Clip.hardEdge,
+    this.clip = Clip.none,
   });
 
   final Widget child;
@@ -33,20 +33,26 @@ final class GlassPanel extends StatelessWidget {
     // queued until a native resize. The panel remains visually translucent via
     // its color, without making every interaction depend on a compositor
     // readback.
+    final panel = DecoratedBox(
+      decoration: BoxDecoration(
+        color: panelColor,
+        borderRadius: BorderRadius.circular(radius),
+        border: Border.all(color: tokens.border.withValues(alpha: 0.9)),
+      ),
+      child: Material(
+        type: MaterialType.transparency,
+        child: Padding(padding: padding, child: child),
+      ),
+    );
+    // A ClipRRect creates a compositor layer that is revisited alongside every
+    // external video-texture frame. Most panels contain bounded layout and only
+    // need a painted rounded border, so avoid that layer unless a caller
+    // explicitly needs clipping.
+    if (clip == Clip.none) return panel;
     return ClipRRect(
       borderRadius: BorderRadius.circular(radius),
       clipBehavior: clip,
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: panelColor,
-          borderRadius: BorderRadius.circular(radius),
-          border: Border.all(color: tokens.border.withValues(alpha: 0.9)),
-        ),
-        child: Material(
-          type: MaterialType.transparency,
-          child: Padding(padding: padding, child: child),
-        ),
-      ),
+      child: panel,
     );
   }
 }

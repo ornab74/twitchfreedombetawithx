@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:twitch_freedom_ultra/core/secure_log.dart';
@@ -7,6 +8,9 @@ import 'package:twitch_freedom_ultra/security/vault.dart';
 
 void main() {
   late HybridPqCrypto hybrid;
+  final nativePqSkip = Platform.isLinux
+      ? false
+      : 'The pinned native liboqs provider is currently bundled on Linux only.';
 
   setUp(() {
     hybrid = HybridPqCrypto(vault: VaultRepository(log: SecureLog()));
@@ -29,7 +33,7 @@ void main() {
     } finally {
       identity.destroy();
     }
-  });
+  }, skip: nativePqSkip);
 
   test('hybrid transcript tampering fails closed', () async {
     final identity = await hybrid.generateIdentity();
@@ -50,5 +54,5 @@ void main() {
     } finally {
       identity.destroy();
     }
-  });
+  }, skip: nativePqSkip);
 }

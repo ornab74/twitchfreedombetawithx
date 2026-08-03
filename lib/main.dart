@@ -41,5 +41,12 @@ Future<void> main() async {
   }
   WidgetsFlutterBinding.ensureInitialized();
 
+  // Discovery thumbnails are deliberately small. Keep Flutter's decoded image
+  // cache bounded so browsing several categories cannot evict useful process
+  // memory or trigger a large GC while a native video texture is presenting.
+  final imageCache = PaintingBinding.instance.imageCache;
+  imageCache.maximumSize = 160;
+  imageCache.maximumSizeBytes = 32 << 20;
+
   runApp(TwitchFreedomApp(controller: AppController()));
 }

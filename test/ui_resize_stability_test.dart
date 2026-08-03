@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:twitch_freedom_ultra/state/app_controller.dart';
 import 'package:twitch_freedom_ultra/core/models.dart';
@@ -122,6 +123,36 @@ void main() {
     expect(find.text('Explore live text metadata'), findsOneWidget);
     expect(find.text('Search live channels or topics'), findsOneWidget);
     expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+    await controller.scheduler.close();
+  });
+
+  testWidgets('off-context typing focuses chat and preserves first character', (
+    WidgetTester tester,
+  ) async {
+    final controller = AppController();
+    addTearDown(controller.scheduler.close);
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(1500, 930);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: FreedomTheme.fromProfile(controller.preferences.theme),
+        home: HomeScreen(controller: controller),
+      ),
+    );
+    await tester.tap(find.text('Select a channel'));
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.keyH, character: 'h');
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.keyH);
+    await tester.pump();
+
+    final composer = tester.widget<TextField>(find.byType(TextField));
+    expect(composer.controller?.text, 'h');
+    expect(composer.focusNode?.hasFocus, isTrue);
+    expect(tester.takeException(), isNull);
+
     await tester.pumpWidget(const SizedBox.shrink());
     await controller.scheduler.close();
   });

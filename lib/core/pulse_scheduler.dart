@@ -213,6 +213,7 @@ final class PulseScheduler {
 
   PulseSignals _signals = const PulseSignals();
   Timer? _creditTimer;
+  bool _started = false;
   bool _closed = false;
   int _sequence = 0;
   int _completed = 0;
@@ -233,24 +234,41 @@ final class PulseScheduler {
   PulseSignals get signals => _signals;
 
   void start() {
-    if (_closed || _creditTimer != null) return;
+    if (_closed || _started) return;
+    _started = true;
+    _log.info('PulseMesh scheduler started with adaptive lane isolation.');
+  }
+
+  void _syncCreditTimer() {
+    if (_closed) return;
+    final now = DateTime.now();
+    final needsRecovery = _credits < 100;
+    final needsTimedWake = _queue.any(
+      (task) => task.notBefore != null && now.isBefore(task.notBefore!),
+    );
+    if (!needsRecovery && !needsTimedWake) {
+      _creditTimer?.cancel();
+      _creditTimer = null;
+      return;
+    }
+    if (_creditTimer != null) return;
     _creditTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       final recovery = _signals.playbackActive ? 10.0 : 18.0;
       final previousCredits = _credits;
       _credits = min(100, _credits + recovery).toDouble();
-      if (_queue.isEmpty && _running == 0 && previousCredits == _credits) {
-        return;
+      if (previousCredits != _credits || _queue.isNotEmpty || _running > 0) {
+        _emitSnapshot();
       }
-      _emitSnapshot();
       _pump();
+      _syncCreditTimer();
     });
-    _log.info('PulseMesh scheduler started with adaptive lane isolation.');
   }
 
   void updateSignals(PulseSignals value) {
     _signals = value;
     _emitSnapshot();
     _pump();
+    _syncCreditTimer();
   }
 
   Future<T> schedule<T>(PulseTaskSpec<T> spec) {
@@ -291,6 +309,7 @@ final class PulseScheduler {
     _emit(task, PulseTaskState.queued);
     _emitSnapshot();
     _pump();
+    _syncCreditTimer();
     return completer.future.then<T>((Object? value) => value as T);
   }
 
@@ -364,6 +383,7 @@ final class PulseScheduler {
       _emit(task, PulseTaskState.cancelled);
     }
     _emitSnapshot();
+    _syncCreditTimer();
   }
 
   void reopenScope(String scope) {
@@ -450,6 +470,7 @@ final class PulseScheduler {
         task.cost +
         (task.lane == PulseLane.ai && _signals.playbackActive ? 18 : 0);
     _credits = max(0, _credits - cost).toDouble();
+    _syncCreditTimer();
     _lastAffinity = task.affinity;
     _emit(task, PulseTaskState.running);
 
@@ -516,6 +537,7 @@ final class PulseScheduler {
           }
           _emitSnapshot();
           _pump();
+          _syncCreditTimer();
         }
       }),
     );
