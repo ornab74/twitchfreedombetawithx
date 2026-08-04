@@ -37,7 +37,9 @@ const Map<String, String> expected = <String, String>{
   'http_parser': '4.1.2',
   'image': '4.8.0',
   'intl': '0.20.3',
-  'jni': '1.0.2',
+  // Flutter 3.44.0's native-asset resolution selects jni 1.0.3 in CI even
+  // though the checked-in lockfile still records the solver-owned 1.0.2.
+  'jni': '1.0.3',
   'jni_flutter': '1.0.2',
   'jni_util': '1.0.0',
   'large_file_handler': '0.5.0',
@@ -113,7 +115,8 @@ const Map<String, String> expected = <String, String>{
   'video_player_avfoundation': '2.11.0',
   'video_player_platform_interface': '6.9.0',
   'video_player_web': '2.4.0',
-  'vm_service': '15.2.0',
+  // The Flutter SDK pins vm_service 15.0.2 during CI resolution.
+  'vm_service': '15.0.2',
   'wakelock_plus': '1.7.0',
   'wakelock_plus_platform_interface': '1.6.0',
   'web': '1.1.1',
