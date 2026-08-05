@@ -107,3 +107,4 @@ lcov.info
 /TwitchFreedom-*.zip
 /TwitchFreedom-*.tar.gz
 /TwitchFreedom-*.sha256
+python_backend/__pycache__/server.cpython-311.pyc
