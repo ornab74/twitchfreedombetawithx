@@ -35,6 +35,11 @@ add_subdirectory(${FLUTTER_MANAGED_DIR})
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(GTK REQUIRED IMPORTED_TARGET gtk+-3.0)
 
+# media_kit links the runner to the distro's libmpv SONAME. Install that exact
+# ABI beside the executable so Debian/Ubuntu do not have to provide the same
+# libmpv major version. The existing $ORIGIN/lib RPATH finds it at runtime.
+find_library(TWITCH_FREEDOM_LIBMPV NAMES mpv libmpv.so.1 libmpv.so.2 REQUIRED)
+
 add_subdirectory("runner")
 add_dependencies(${BINARY_NAME} flutter_assemble)
 set_target_properties(${BINARY_NAME} PROPERTIES
@@ -54,6 +59,7 @@ set(INSTALL_BUNDLE_LIB_DIR "${CMAKE_INSTALL_PREFIX}/lib")
 install(TARGETS ${BINARY_NAME} RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}" COMPONENT Runtime)
 install(FILES "${FLUTTER_ICU_DATA_FILE}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}" COMPONENT Runtime)
 install(FILES "${FLUTTER_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}" COMPONENT Runtime)
+install(FILES "${TWITCH_FREEDOM_LIBMPV}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}" COMPONENT Runtime)
 
 # A pinned, minimal ML-KEM-768 liboqs build can be produced with
 # tool/bootstrap_liboqs_linux.sh. Never silently fall back to non-PQ crypto:
