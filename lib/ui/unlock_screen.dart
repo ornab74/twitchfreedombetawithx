@@ -5,6 +5,7 @@ import '../core/app_config.dart';
 import '../core/result.dart';
 import '../state/app_controller.dart';
 import 'theme.dart';
+import 'tutorial_screen.dart';
 import 'widgets/brand_mark.dart';
 import 'widgets/glass_panel.dart';
 
@@ -262,6 +263,12 @@ final class _UnlockScreenState extends State<UnlockScreen> {
                                       ? 'Create encrypted vault'
                                       : 'Unlock',
                                 ),
+                              ),
+                              const SizedBox(height: 14),
+                              OutlinedButton.icon(
+                                onPressed: () => showTutorialSheet(context),
+                                icon: const Icon(Icons.menu_book_rounded),
+                                label: const Text('View setup tutorial'),
                               ),
                               const SizedBox(height: 14),
                               Row(

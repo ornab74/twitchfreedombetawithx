@@ -6,6 +6,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../core/app_config.dart';
 import '../state/app_controller.dart';
 import 'theme.dart';
+import 'tutorial_screen.dart';
 import 'widgets/glass_panel.dart';
 
 Future<void> showHelpSheet(BuildContext context, AppController controller) {
@@ -61,6 +62,16 @@ final class HelpSheet extends StatelessWidget {
                   children: <Widget>[
                     const _HelpHero(),
                     const SizedBox(height: 14),
+                    Card(
+                      child: ListTile(
+                        leading: const Icon(Icons.menu_book_rounded),
+                        title: const Text('Account & token setup tutorial'),
+                        subtitle: const Text('Twitch app, chat bot authorization, X bearer token, and first stream.'),
+                        trailing: const Icon(Icons.arrow_forward_rounded),
+                        onTap: () => showTutorialSheet(context),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
                     _HelpSection(
                       icon: Icons.rocket_launch_rounded,
                       title: 'Quick start',
