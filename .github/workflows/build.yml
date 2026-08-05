@@ -28,7 +28,9 @@ jobs:
           - os: macos-14
             platform: macos
             artifact: TwitchFreedom-macOS
-          - os: ubuntu-24.04
+          # Build against an older glibc/libstdc++ baseline so the DEB also
+          # runs on Debian 12 and other supported amd64 Linux installations.
+          - os: ubuntu-22.04
             platform: linux
             artifact: TwitchFreedom-Linux-x64
     runs-on: ${{ matrix.os }}
