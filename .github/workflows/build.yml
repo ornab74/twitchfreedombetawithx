@@ -114,6 +114,21 @@ jobs:
           echo "$LIBOQS_SHA256  build/linux/x64/release/bundle/lib/liboqs.so" | sha256sum --check --strict
           cmp native/linux/liboqs.so build/linux/x64/release/bundle/lib/liboqs.so
 
+      - name: Adjust packaged release size (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tool/add_release_size_adjustment.ps1 -Bundle build/windows/x64/runner/Release
+
+      - name: Adjust packaged release size (Unix desktop)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          if [[ "${{ matrix.platform }}" == "macos" ]]; then
+            ./tool/add_release_size_adjustment.sh build/macos/Build/Products/Release/twitch_freedom_ultra.app
+          else
+            ./tool/add_release_size_adjustment.sh build/linux/x64/release/bundle
+          fi
+
       - name: Install Windows packaging tools
         if: runner.os == 'Windows'
         shell: pwsh
