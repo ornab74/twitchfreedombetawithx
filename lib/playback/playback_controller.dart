@@ -37,6 +37,22 @@ String cpuSafePlaybackQuality(String requested, {int maximumHeight = 480}) {
   return height > cap || height == cap && fps > 30 ? cappedLabel : requested;
 }
 
+double playbackTextureScale({
+  required bool softwareRendering,
+  required bool boundedAutomaticLinuxOutput,
+  required bool highResolution,
+}) {
+  // Preserve every available pixel for 720p and lower streams. The
+  // software texture backend already has a hard 1280x720 safety cap.
+  if (!highResolution) return 1.0;
+
+  // Bound only genuinely expensive 1080p+ texture transfers. Explicit
+  // Hardware / GPU mode remains the full-resolution opt-in path.
+  if (softwareRendering) return 0.5;
+  if (boundedAutomaticLinuxOutput) return 0.75;
+  return 1.0;
+}
+
 /// Cross-platform player centered on media_kit, with video_player retained as a
 /// native Apple/Android compatibility backend and a tightly allowlisted system
 /// FFmpeg process used only for bounded, ephemeral audio extraction.
@@ -126,9 +142,8 @@ final class UnifiedPlaybackController extends ChangeNotifier {
     final softwareRendering = _softwareMediaOutput;
     // A packaged Linux build can have a writable DRM render node while still
     // lacking a usable VA-API driver. mpv then falls back to CPU decoding at
-    // runtime. Keep Automatic mode's texture transfer bounded too; explicitly
-    // selecting Hardware / GPU remains the opt-in full-size path.
-    final boundedOutput = softwareRendering || _boundedAutomaticLinuxOutput;
+    // runtime. Bound only high-resolution texture transfers; 720p and lower
+    // must remain native so fullscreen playback does not upscale a 360p image.
     final highResolution = policy.maximumMiB >= 64;
     _videoController = VideoController(
       player,
@@ -138,18 +153,15 @@ final class UnifiedPlaybackController extends ChangeNotifier {
         // fragile GPU APIs while still selecting VA-API, NVDEC, or VDPAU when
         // the Linux runner detected an accessible video device.
         hwdec: softwareRendering ? 'no' : 'auto-safe',
-        // CPU pixel-buffer transfer at full 1080p can monopolize GTK's raster
-        // thread during a maximize/fullscreen resize. Half-scale output keeps
-        // the texture responsive while decoding the selected stream normally.
-        // A full 1080p EGL texture can saturate an integrated GPU's fill and
-        // context-switch budget even while CPU usage remains low. Rendering it
-        // at 75% preserves a sharp UI-sized image and gives Flutter headroom
-        // to sustain compositor frames. 720p and below remain native size.
-        scale: boundedOutput
-            ? .5
-            : highResolution
-            ? .75
-            : 1,
+        // Preserve native texture size through 720p. For 1080p+ streams,
+        // software rendering uses half scale and Automatic Linux uses 75%
+        // scale to retain compositor headroom. Explicit Hardware / GPU keeps
+        // the full source dimensions.
+        scale: playbackTextureScale(
+          softwareRendering: softwareRendering,
+          boundedAutomaticLinuxOutput: _boundedAutomaticLinuxOutput,
+          highResolution: highResolution,
+        ),
       ),
     );
     if (softwareRendering) {
