@@ -1,0 +1,210 @@
+name: Apply 720p fullscreen clarity repair
+
+on:
+  push:
+    branches:
+      - agent/preserve-720p-fullscreen-clarity
+    paths:
+      - .github/workflows/agent-preserve-720p.yml
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/preserve-720p-fullscreen-clarity
+          fetch-depth: 0
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Apply focused playback repair
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          controller_path = Path('lib/playback/playback_controller.dart')
+          controller = controller_path.read_text()
+
+          quality_function = """String cpuSafePlaybackQuality(String requested, {int maximumHeight = 480}) {
+            final normalized = requested.trim().toLowerCase();
+            final cap = maximumHeight <= 360 ? 360 : 480;
+            final requestedFps = RegExp(r'(\\d{2,3})$').firstMatch(normalized);
+            final preferSmooth =
+                normalized == 'best' ||
+                normalized == 'source' ||
+                (int.tryParse(requestedFps?.group(1) ?? '') ?? 30) >= 50;
+            final cappedLabel = '${cap}p${preferSmooth ? '60' : ''}';
+            if (normalized == 'best' ||
+                normalized == 'source' ||
+                normalized == '720p60' ||
+                normalized == '720p') {
+              return cappedLabel;
+            }
+            final match = RegExp(r'^(\\d{3,4})p(?:(\\d{2,3}))?$').firstMatch(normalized);
+            if (match == null) return requested;
+            final height = int.tryParse(match.group(1)!) ?? 0;
+            final fps = int.tryParse(match.group(2) ?? '') ?? 30;
+            return height > cap || height == cap && fps > 30 ? cappedLabel : requested;
+          }
+          """
+
+          helper = quality_function + """
+          double playbackTextureScale({
+            required bool softwareRendering,
+            required bool boundedAutomaticLinuxOutput,
+            required bool highResolution,
+          }) {
+            // Preserve every available pixel for 720p and lower streams. The
+            // software texture backend already has a hard 1280x720 safety cap.
+            if (!highResolution) return 1.0;
+
+            // Bound only genuinely expensive 1080p+ texture transfers. Explicit
+            // Hardware / GPU mode remains the full-resolution opt-in path.
+            if (softwareRendering) return 0.5;
+            if (boundedAutomaticLinuxOutput) return 0.75;
+            return 1.0;
+          }
+          """
+
+          if quality_function not in controller:
+              raise SystemExit('cpuSafePlaybackQuality anchor was not found')
+          controller = controller.replace(quality_function, helper, 1)
+
+          old_policy = """    // A packaged Linux build can have a writable DRM render node while still
+              // lacking a usable VA-API driver. mpv then falls back to CPU decoding at
+              // runtime. Keep Automatic mode's texture transfer bounded too; explicitly
+              // selecting Hardware / GPU remains the opt-in full-size path.
+              final boundedOutput = softwareRendering || _boundedAutomaticLinuxOutput;
+              final highResolution = policy.maximumMiB >= 64;
+              _videoController = VideoController(
+                player,
+                configuration: VideoControllerConfiguration(
+                  enableHardwareAcceleration: !softwareRendering,
+                  // auto-safe is mpv's FFmpeg-backed zero-copy allowlist. It avoids
+                  // fragile GPU APIs while still selecting VA-API, NVDEC, or VDPAU when
+                  // the Linux runner detected an accessible video device.
+                  hwdec: softwareRendering ? 'no' : 'auto-safe',
+                  // CPU pixel-buffer transfer at full 1080p can monopolize GTK's raster
+                  // thread during a maximize/fullscreen resize. Half-scale output keeps
+                  // the texture responsive while decoding the selected stream normally.
+                  // A full 1080p EGL texture can saturate an integrated GPU's fill and
+                  // context-switch budget even while CPU usage remains low. Rendering it
+                  // at 75% preserves a sharp UI-sized image and gives Flutter headroom
+                  // to sustain compositor frames. 720p and below remain native size.
+                  scale: boundedOutput
+                      ? .5
+                      : highResolution
+                      ? .75
+                      : 1,
+                ),
+              );
+          """
+
+          new_policy = """    // A packaged Linux build can have a writable DRM render node while still
+              // lacking a usable VA-API driver. mpv then falls back to CPU decoding at
+              // runtime. Bound only high-resolution texture transfers; 720p and lower
+              // must remain native so fullscreen playback does not upscale a 360p image.
+              final highResolution = policy.maximumMiB >= 64;
+              _videoController = VideoController(
+                player,
+                configuration: VideoControllerConfiguration(
+                  enableHardwareAcceleration: !softwareRendering,
+                  // auto-safe is mpv's FFmpeg-backed zero-copy allowlist. It avoids
+                  // fragile GPU APIs while still selecting VA-API, NVDEC, or VDPAU when
+                  // the Linux runner detected an accessible video device.
+                  hwdec: softwareRendering ? 'no' : 'auto-safe',
+                  // Preserve native texture size through 720p. For 1080p+ streams,
+                  // software rendering uses half scale and Automatic Linux uses 75%
+                  // scale to retain compositor headroom. Explicit Hardware / GPU keeps
+                  // the full source dimensions.
+                  scale: playbackTextureScale(
+                    softwareRendering: softwareRendering,
+                    boundedAutomaticLinuxOutput: _boundedAutomaticLinuxOutput,
+                    highResolution: highResolution,
+                  ),
+                ),
+              );
+          """
+
+          if old_policy not in controller:
+              raise SystemExit('texture scale policy anchor was not found')
+          controller = controller.replace(old_policy, new_policy, 1)
+          controller_path.write_text(controller)
+
+          test_path = Path('test/playback_cache_policy_test.dart')
+          tests = test_path.read_text()
+          anchor = """  test('software texture scaling reduces native pixel transfer dimensions', () {
+          """
+          regression = """  test('720p textures remain native while only 1080p output is bounded', () {
+            expect(
+              playbackTextureScale(
+                softwareRendering: false,
+                boundedAutomaticLinuxOutput: true,
+                highResolution: false,
+              ),
+              1,
+            );
+            expect(
+              playbackTextureScale(
+                softwareRendering: true,
+                boundedAutomaticLinuxOutput: false,
+                highResolution: false,
+              ),
+              1,
+            );
+            expect(
+              playbackTextureScale(
+                softwareRendering: true,
+                boundedAutomaticLinuxOutput: false,
+                highResolution: true,
+              ),
+              .5,
+            );
+            expect(
+              playbackTextureScale(
+                softwareRendering: false,
+                boundedAutomaticLinuxOutput: true,
+                highResolution: true,
+              ),
+              .75,
+            );
+            expect(
+              playbackTextureScale(
+                softwareRendering: false,
+                boundedAutomaticLinuxOutput: false,
+                highResolution: true,
+              ),
+              1,
+            );
+          });
+
+          """
+          if anchor not in tests:
+              raise SystemExit('test insertion anchor was not found')
+          tests = tests.replace(anchor, regression + anchor, 1)
+          test_path.write_text(tests)
+          PY
+
+      - name: Format and test
+        run: |
+          dart format lib/playback/playback_controller.dart test/playback_cache_policy_test.dart
+          flutter pub get
+          flutter test test/playback_cache_policy_test.dart
+
+      - name: Commit repair and remove one-use workflow
+        shell: bash
+        run: |
+          rm .github/workflows/agent-preserve-720p.yml
+          git config user.name "OpenAI Agent"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add lib/playback/playback_controller.dart test/playback_cache_policy_test.dart .github/workflows/agent-preserve-720p.yml
+          git commit -m "preserve 720p fullscreen texture clarity"
+          git push origin HEAD:agent/preserve-720p-fullscreen-clarity
