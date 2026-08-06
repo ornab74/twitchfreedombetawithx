@@ -59,6 +59,49 @@ void main() {
     expect(cpuSafePlaybackQuality('best', maximumHeight: 360), '360p60');
   });
 
+  test('720p textures remain native while only 1080p output is bounded', () {
+    expect(
+      playbackTextureScale(
+        softwareRendering: false,
+        boundedAutomaticLinuxOutput: true,
+        highResolution: false,
+      ),
+      1,
+    );
+    expect(
+      playbackTextureScale(
+        softwareRendering: true,
+        boundedAutomaticLinuxOutput: false,
+        highResolution: false,
+      ),
+      1,
+    );
+    expect(
+      playbackTextureScale(
+        softwareRendering: true,
+        boundedAutomaticLinuxOutput: false,
+        highResolution: true,
+      ),
+      .5,
+    );
+    expect(
+      playbackTextureScale(
+        softwareRendering: false,
+        boundedAutomaticLinuxOutput: true,
+        highResolution: true,
+      ),
+      .75,
+    );
+    expect(
+      playbackTextureScale(
+        softwareRendering: false,
+        boundedAutomaticLinuxOutput: false,
+        highResolution: true,
+      ),
+      1,
+    );
+  });
+
   test('software texture scaling reduces native pixel transfer dimensions', () {
     final fullHd = scaledVideoOutputSize(width: 1920, height: 1080, scale: .5);
     expect((fullHd.width, fullHd.height), (960, 540));
